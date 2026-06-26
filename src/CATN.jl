@@ -13,5 +13,6 @@ export cano_to!, left_canonical!
 export swap!, move!, move2tail!, move2head!, reverse!
 export find_neighbor, add_neighbor!, delete_neighbor!
 export logdim, lognorm, clear!
+export merge!
 
 end # module

@@ -1,4 +1,4 @@
-using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!
+using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!, merge!
 using LinearAlgebra, Test
 
 @testset "raw2mps/mps2raw round-trip" begin
@@ -90,4 +90,22 @@ end
     swap!(node, 3, 2)                # swap sites 3 and 2, going left
     @test node.neighbor == [10,30,20,40]
     @test mps2raw(node) ≈ permutedims(T, (1,3,2,4))
+end
+
+@testset "merge! fuses duplicate-neighbor legs" begin
+    # order-3 tensor, legs 1 and 3 both point to neighbor 7 (a duplicate)
+    T = randn(2, 5, 3)
+    node = MPSNode(T, [7, 8, 7]; chi=1000)
+    merge!(node, 7)                 # fuse legs to neighbor 7
+    @test count(==(7), node.neighbor) == 1
+    # remaining represented tensor: legs (7-fused, 8).
+    # cross=false: move leg at idx2=3 to idx1+1=2 (i.e., swap legs 2 and 3),
+    # fuse legs 1 and 2 of the reordered tensor (original legs 1 and 3).
+    # mps2raw on the fused node has shape (2*3, 5); combined index runs
+    # original leg1 fast (since it stays at idx1=1), original leg3 slow.
+    raw = mps2raw(node)
+    # After swap (move leg3 to pos2): tensor becomes permutedims(T,(1,3,2)) of shape (2,3,5)
+    # Fusing dims 1 and 2 in column-major order: reshape to (2*3, 5)
+    expected = reshape(permutedims(T, (1, 3, 2)), 2*3, 5)
+    @test reshape(raw, size(raw, 1), size(raw, 2)) ≈ expected
 end

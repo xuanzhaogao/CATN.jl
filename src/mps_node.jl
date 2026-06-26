@@ -323,3 +323,50 @@ function clear!(node::MPSNode)
     empty!(node.neighbor)
     return node
 end
+
+"""
+    merge!(node, j; cross=false) -> Float64
+
+Fuse the two MPS sites whose `neighbor == j` (a duplicate edge that arises
+during network contraction) into a single rank-3 site.
+
+Algorithm (mirrors `mps_node_np.py:354-376`):
+1. Locate the two positions `idx1 < idx2` where `node.neighbor == j`.
+2. Move site `idx2` to position `idx1+1` (cross=false) or `idx1` (cross=true)
+   via `move!`.  Because Julia's `swap!` keeps `node.neighbor` synchronised
+   with `node.mps`, we delete the duplicate neighbor entry *after* the move,
+   at the final landing position of the duplicate site.
+3. Canonicalise to `idx1`, fuse `mps[idx1]` and `mps[idx1+1]` via
+   `ein"ijk,kab->ijab"` reshaped to `(dl, d*d', dr2)`, drop the extra tensor,
+   and canonicalise to `idx1` again.
+
+Returns the accumulated truncation error from `move!`.
+"""
+function merge!(node::MPSNode, j::Int; cross::Bool=false)
+    positions = findall(==(j), node.neighbor)
+    length(positions) == 2 || error("merge!: expected exactly 2 sites with neighbor $j, found $(length(positions))")
+    idx1 = positions[1]
+    idx2 = positions[2]
+
+    # Move idx2 adjacent to idx1 (Julia's move! keeps neighbor in sync with mps)
+    target = cross ? idx1 : idx1 + 1
+    error = move!(node, idx2, target)
+
+    # After move, the duplicate neighbor entry is at position `target`; remove it
+    deleteat!(node.neighbor, target)
+
+    # Canonicalise to idx1, then fuse idx1 and idx1+1
+    cano_to!(node, idx1)
+    dl  = size(node.mps[idx1], 1)
+    dr2 = size(node.mps[idx1 + 1], 3)
+    node.mps[idx1] = reshape(
+        ein"ijk,kab->ijab"(node.mps[idx1], node.mps[idx1 + 1]),
+        dl, :, dr2
+    )
+    deleteat!(node.mps, idx1 + 1)
+
+    # Final canonicalisation
+    cano_to!(node, idx1)
+
+    return error
+end
