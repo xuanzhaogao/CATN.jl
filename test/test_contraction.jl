@@ -1,6 +1,7 @@
 using CATN: TensorNetwork, MPSNode, mps2raw, order
 using CATN: dim_after_merge, select_edge_init!, select_edge_min_dim, select_edge_sequentially
 using CATN: cut_bondim!, cut_bondim_opt!
+using CATN: contraction!
 using Test
 # exact_contract is available from exact.jl (included earlier in runtests.jl)
 
@@ -53,4 +54,43 @@ end
         got = ein"am,mb->ab"(mps2raw(tn.tensors[1]), mps2raw(tn.tensors[2]))
         @test got ≈ P*Qm atol=1e-8
     end
+end
+
+# ---------------------------------------------------------------------------
+# contraction! tests
+# ---------------------------------------------------------------------------
+
+function catn_value(tensors, ixs; kwargs...)
+    tn = TensorNetwork(tensors, ixs; kwargs...)
+    lnZ, err, psi = contraction!(tn)
+    return exp(lnZ) * psi
+end
+
+@testset "contraction! exact mode matches oracle" begin
+    networks = [
+        # chain: 3-node loop
+        ([randn(3,4), randn(4,5), randn(5,3)], [[:a,:b],[:b,:c],[:c,:a]]),
+        # star/tree: 4-node star with 3 leaves
+        ([randn(2,3,4), randn(2), randn(3), randn(4)],
+         [[:a,:b,:c],[:a],[:b],[:c]]),
+        # single loop of 4 nodes
+        ([randn(2,3),randn(3,2),randn(2,3),randn(3,2)],
+         [[:a,:b],[:b,:c],[:c,:d],[:d,:a]]),
+    ]
+    for (ts, ixs) in networks
+        ref = exact_contract(ts, ixs)[]
+        for sel in 0:2, rev in (false,true), comp in (false,true)
+            got = catn_value(ts, ixs; Dmax=-1, chi=10_000,
+                             select=sel, reverse=rev, compress=comp, norm_method=1)
+            @test got ≈ ref rtol=1e-8
+        end
+    end
+end
+
+@testset "contraction! finite Dmax is close on a contractible loop" begin
+    ts, ixs = ([randn(4,4),randn(4,4),randn(4,4),randn(4,4)],
+               [[:a,:b],[:b,:c],[:c,:d],[:d,:a]])
+    ref = exact_contract(ts, ixs)[]
+    got = catn_value(ts, ixs; Dmax=4, chi=64, select=1, compress=true)
+    @test got ≈ ref rtol=1e-6
 end

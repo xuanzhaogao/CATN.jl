@@ -23,5 +23,6 @@ export count_add_edges!, count_add_nodes!, count_remove_nodes!
 export select_edge_init!
 export select_edge_min_dim, select_edge_min_dim_triangle, select_edge_sequentially
 export cut_bondim!, cut_bondim_opt!
+export contraction!
 
 end # module

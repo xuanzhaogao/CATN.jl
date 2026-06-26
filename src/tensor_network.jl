@@ -467,3 +467,212 @@ function cut_bondim_opt!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
 
     return error
 end
+
+# ---------------------------------------------------------------------------
+# Network lognorm helper
+# ---------------------------------------------------------------------------
+
+"""
+    network_lognorm(tn) -> (lognorm, sign)
+
+Sum of `lognorm(node)` over all nodes in `tn.tensors`.
+Mirrors `tn_np.py:453`.
+"""
+function network_lognorm(tn::TensorNetwork)
+    T = eltype(first(values(tn.tensors)).mps |> v -> isempty(v) ? [1.0] : v[1])
+    lognorm_total = zero(real(T))
+    sign_total = one(T)
+    for (_, node) in tn.tensors
+        ln, sg = lognorm(node)
+        lognorm_total += ln
+        sign_total *= sg
+    end
+    return (lognorm_total, sign_total)
+end
+
+# ---------------------------------------------------------------------------
+# Main contraction loop
+# ---------------------------------------------------------------------------
+
+"""
+    has_real_edges(tn) -> Bool
+
+Return true iff any node in `tn` has at least one real (non-sentinel) neighbor.
+Mirrors `self.G.number_of_edges() > 0` from tn_np.py:302.
+"""
+function has_real_edges(tn::TensorNetwork)
+    for (_, node) in tn.tensors
+        for nb in node.neighbor
+            nb > 0 && return true
+        end
+    end
+    return false
+end
+
+"""
+    contraction!(tn) -> (lnZ, error, psi)
+
+Perform the full CATN contraction loop: repeatedly select an edge (i,j), eat
+node j into node i, optionally compress, and accumulate the log-partition
+function `lnZ`, truncation `error`, and phase `psi`.
+
+Mirrors `tn_np.py:294-451`. After the loop, remaining per-node lognorms are
+added and the `log(2)*num_isolated` contribution (already set as the initial
+`lnZ`) is preserved.
+"""
+function contraction!(tn::TensorNetwork{T}) where {T}
+    error = 0.0
+    tn.psi = one(T)
+    # Initial lnZ includes log(2)*num_isolated (mirrors tn_np.py:297)
+    tn.lnZ = log(T(2)) * tn.num_isolated
+
+    # Build edge_count if not yet initialized (mirrors tn_np.py: select is called
+    # inside the loop but edge_count must be valid for select=0 or select=1)
+    if tn.select in (0, 1) && isempty(tn.edge_count)
+        select_edge_init!(tn)
+    end
+
+    while has_real_edges(tn)
+        # --- Select edge ---
+        if tn.select == 0
+            i, j = select_edge_min_dim(tn)
+        elseif tn.select == 1
+            i, j = select_edge_min_dim_triangle(tn)
+        else  # select == 2
+            i, j = select_edge_sequentially(tn)
+        end
+
+        # Ensure order(i) >= order(j) (mirrors tn_np.py:313-314)
+        node_i = tn.tensors[i]
+        node_j = tn.tensors[j]
+        if order(node_j) > order(node_i)
+            i, j = j, i
+            node_i, node_j = node_j, node_i
+        end
+
+        # --- Bookkeeping: remove affected edges BEFORE any shape mutation ---
+        # Mirrors tn_np.py:320 ("take care of the count dictionary first")
+        affected = vcat([i, j], collect(node_i.neighbor), collect(node_j.neighbor))
+        if tn.select in (0, 1)
+            count_remove_nodes!(tn, affected)
+        end
+
+        # --- Find connection indices ---
+        neigh_i = copy(node_i.neighbor)   # snapshot before any mutation
+        neigh_j = copy(node_j.neighbor)   # snapshot before any mutation
+        idx_j_in_i = find_neighbor(node_i, j)
+        idx_i_in_j = find_neighbor(node_j, i)
+
+        # --- Optional reverse to minimize swap cost ---
+        # Mirrors tn_np.py:327-341 (but our swap!/reverse! keep neighbor in sync,
+        # so we just recompute the indices after reverse!)
+        if tn.reverse
+            if idx_j_in_i < cld(length(node_i.neighbor), 2)   # idx_j_in_i < len//2
+                reverse!(node_i)
+                neigh_i = copy(node_i.neighbor)
+                idx_j_in_i = find_neighbor(node_i, j)
+            end
+            if idx_i_in_j >= cld(length(node_j.neighbor), 2)   # idx_i_in_j >= len//2
+                reverse!(node_j)
+                neigh_j = copy(node_j.neighbor)
+                idx_i_in_j = find_neighbor(node_j, i)
+            end
+        end
+
+        # --- Re-point j's other neighbors to i, detecting duplicates ---
+        # Mirrors tn_np.py:344-362.
+        # NOTE: We do NOT touch node_i.neighbor here; eat! handles it internally
+        # (removes contracted leg from tail, appends nodej's remaining neighbors).
+        # We only update node_k.neighbor (replace j with i) and track duplicates.
+
+        duplicate = Int[]
+        for l in 1:length(neigh_j)
+            l == idx_i_in_j && continue   # skip the i→j connection
+            k = neigh_j[l]
+            k <= 0 && continue            # skip open-leg sentinels
+
+            # Check if k is already a neighbor of i (against ORIGINAL node_i.neighbor,
+            # before eat! appends j's others) — 0 if not present
+            idx_k_in_i = find_neighbor(node_i, k)
+
+            # Update node_k: replace j with i at the same position
+            node_k = tn.tensors[k]
+            idx_i_in_k = find_neighbor(node_k, i)   # 0 if i not yet in k (before deletion)
+            idx_j_in_k = delete_neighbor!(node_k, j) # returns former 1-based position of j
+            add_neighbor!(node_k, i, idx_j_in_k)     # insert i at that position
+
+            if idx_k_in_i > 0   # k was already a neighbor of i → duplicate
+                push!(duplicate, k)
+                # cross = true when idx_i_in_k > idx_j_in_k (mirrors tn_np.py:360)
+                cross = idx_i_in_k > idx_j_in_k
+                err = merge!(node_k, i; cross=cross)
+                error += err
+            end
+        end
+
+        # --- eat! j into i ---
+        # mirrors tn_np.py:367-372
+        lognorm_val, err, phase = eat!(node_i, node_j, idx_j_in_i, idx_i_in_j)
+        error += err
+        tn.psi *= phase
+        tn.lnZ += lognorm_val
+
+        # --- Per-duplicate: merge into i, then cut bond if needed ---
+        # Mirrors tn_np.py:374-395
+        for k in duplicate
+            merge!(node_i, k; cross=false)
+            idx_k_in_i = find_neighbor(node_i, k)
+            if tn.svdopt
+                if tn.cut_bond
+                    error += cut_bondim_opt!(tn, i, idx_k_in_i)
+                else
+                    if tn.Dmax > 0 && size(node_i.mps[idx_k_in_i], 2) > tn.Dmax
+                        error += cut_bondim_opt!(tn, i, idx_k_in_i)
+                    end
+                end
+            else
+                if tn.cut_bond
+                    error += cut_bondim_opt!(tn, i, idx_k_in_i)
+                else
+                    if tn.Dmax > 0 && size(node_i.mps[idx_k_in_i], 2) > tn.Dmax
+                        error += cut_bondim_opt!(tn, i, idx_k_in_i)
+                    end
+                end
+            end
+        end
+
+        # --- Clear j ---
+        clear!(node_j)
+        # (In Python: self.G.remove_node(j) — we keep node j in tn.tensors but empty it)
+
+        # --- Optional compress ---
+        if tn.compress
+            if tn.svdopt
+                compress_opt!(node_i)
+            else
+                compress!(node_i)
+            end
+        end
+
+        # --- Update bookkeeping ---
+        if tn.select in (0, 1)
+            count_add_nodes!(tn, vcat([i], collect(node_i.neighbor)))
+        end
+
+        # --- Track maxdim_intermediate ---
+        for t in node_i.mps
+            d = size(t, 2)
+            if d > tn.maxdim_intermediate
+                tn.maxdim_intermediate = d
+            end
+        end
+    end
+
+    # --- After loop: accumulate remaining lognorms ---
+    # Mirrors tn_np.py:449-450
+    ln, sg = network_lognorm(tn)
+    tn.sign = sg
+    tn.lnZ += ln
+
+    return (tn.lnZ, error, tn.psi)
+end
