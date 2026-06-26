@@ -325,6 +325,113 @@ function clear!(node::MPSNode)
 end
 
 """
+    compress!(node) -> Float64
+
+Compress the whole MPS by first left-canonicalizing (moving `cano` to the last
+site), then sweeping right-to-left with two-site SVD truncation to `node.chi`.
+
+For each step `j` from `length(mps)` down to `2` (with `i = j-1`):
+1. Fuse sites `i` and `j` via `ein"ijk,kab->ijab"` reshaped to `(d0*d1, d2*d3)`.
+2. Truncated SVD to `node.chi`.
+3. Write back `mps[i] = reshape(U*Diagonal(S), d0, d1, :)`,
+   `mps[j] = reshape(V', :, d2, d3)`.
+
+Sets `cano = 1` and returns the accumulated truncation error (sum of discarded
+singular values over all sweeps).
+"""
+function compress!(node::MPSNode)
+    error = 0.0
+    isempty(node.mps) && return error
+    left_canonical!(node)   # cano now at last site (right end)
+    mps = node.mps
+    for j in length(mps):-1:2
+        i = j - 1
+        tl = mps[i]
+        tr = mps[j]
+        d0, d1 = size(tl, 1), size(tl, 2)
+        d2, d3 = size(tr, 2), size(tr, 3)
+        mat = reshape(ein"ijk,kab->ijab"(tl, tr), d0 * d1, d2 * d3)
+        U, S, V, err = tsvd(mat; cutoff=node.cutoff, maxdim=node.chi)
+        error += err
+        myd = length(S)
+        mps[i] = reshape(U * Diagonal(S), d0, d1, myd)
+        mps[j] = reshape(V', myd, d2, d3)
+    end
+    node.cano = 1
+    return error
+end
+
+"""
+    compress_opt!(node) -> Float64
+
+Like `compress!` but uses QR decomposition before the SVD to reduce the size of
+the matrix passed to SVD (mirrors `mps_node_np.py:202-283`).
+
+- `flag_left`:  when `matl` (shape `(d0*d1, dd)`) has more rows than columns,
+  QR-decompose `matl` to get a thin `Ql` and `Rl`; otherwise use `Rl = matl`.
+- `flag_right`: when `matr` (shape `(dd, d2*d3)`) has fewer rows than columns,
+  QR-decompose `matr'` to get `Qr` and `Rr`; otherwise use `Rr = matr'`.
+- SVD is performed on `Rl * Rr'`.
+- After truncation, `U` is expanded back via `Ql` (if `flag_left`) and `V` via
+  `Qr` (if `flag_right`).
+
+Returns the accumulated truncation error.
+"""
+function compress_opt!(node::MPSNode)
+    error = 0.0
+    isempty(node.mps) && return error
+    left_canonical!(node)   # cano now at last site (right end)
+    mps = node.mps
+    for j in length(mps):-1:2
+        i = j - 1
+        tl = mps[i]
+        tr = mps[j]
+        d0, d1 = size(tl, 1), size(tl, 2)
+        d2, d3 = size(tr, 2), size(tr, 3)
+        dd = size(tl, 3)   # == size(tr, 1)
+
+        matl = reshape(tl, d0 * d1, dd)
+        matr = reshape(tr, dd, d2 * d3)
+
+        flag_left  = false
+        flag_right = false
+        local Ql, Qr
+
+        if size(matl, 1) > size(matl, 2)
+            flag_left = true
+            Fl = qr(matl)
+            Ql = Matrix(Fl.Q)
+            Rl = Matrix(Fl.R)
+        else
+            Rl = matl
+        end
+
+        if size(matr, 1) < size(matr, 2)
+            flag_right = true
+            Fr = qr(matr')
+            Qr = Matrix(Fr.Q)
+            Rr = Matrix(Fr.R)
+        else
+            Rr = matr'
+        end
+
+        mat = Rl * Rr'
+        U, S, V, err = tsvd(mat; cutoff=node.cutoff, maxdim=node.chi)
+        error += err
+        myd = length(S)
+
+        U = U * Diagonal(S)
+        flag_left  && (U = Ql * U)
+        flag_right && (V = Qr * V)
+
+        mps[i] = reshape(U, d0, d1, myd)
+        mps[j] = reshape(V', myd, d2, d3)
+    end
+    node.cano = 1
+    return error
+end
+
+"""
     merge!(node, j; cross=false) -> Float64
 
 Fuse the two MPS sites whose `neighbor == j` (a duplicate edge that arises

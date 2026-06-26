@@ -14,5 +14,6 @@ export swap!, move!, move2tail!, move2head!, reverse!
 export find_neighbor, add_neighbor!, delete_neighbor!
 export logdim, lognorm, clear!
 export merge!
+export compress!, compress_opt!
 
 end # module

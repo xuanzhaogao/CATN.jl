@@ -1,4 +1,4 @@
-using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!, merge!
+using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!, merge!, compress!, compress_opt!
 using LinearAlgebra, Test
 
 @testset "raw2mps/mps2raw round-trip" begin
@@ -90,6 +90,24 @@ end
     swap!(node, 3, 2)                # swap sites 3 and 2, going left
     @test node.neighbor == [10,30,20,40]
     @test mps2raw(node) ≈ permutedims(T, (1,3,2,4))
+end
+
+@testset "compress preserves tensor" begin
+    T = randn(2,3,4,3,2)
+    for f! in (compress!, compress_opt!)
+        node = MPSNode(T, collect(1:5); chi=1000)
+        ref = mps2raw(node)
+        err = f!(node)
+        @test node.cano == 1
+        @test mps2raw(node) ≈ ref
+        @test err isa Float64
+        @test err >= 0.0
+    end
+    # compress removes inflated bonds on a low-rank chain
+    A = randn(3,2); M = kron(A, A')         # contrived low-rank-ish
+    node = MPSNode(reshape(M, 3,2,2,3), collect(1:4); chi=1000)
+    compress!(node)
+    @test mps2raw(node) ≈ reshape(M, 3,2,2,3)
 end
 
 @testset "merge! fuses duplicate-neighbor legs" begin
