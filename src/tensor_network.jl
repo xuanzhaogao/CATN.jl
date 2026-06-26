@@ -527,8 +527,14 @@ added and the `log(2)*num_isolated` contribution (already set as the initial
 function contraction!(tn::TensorNetwork{T}) where {T}
     error = 0.0
     tn.psi = one(T)
-    # Initial lnZ includes log(2)*num_isolated (mirrors tn_np.py:297)
-    tn.lnZ = log(T(2)) * tn.num_isolated
+    # Initial lnZ = 0; isolated node contributions are already encoded in their MPS
+    # tensors (each isolated spin k stores 2*cosh(β*h_k) in a (1,1,1) site and is
+    # accumulated by network_lognorm after the loop).
+    # NOTE: the Python reference (tn_np.py:297) adds log(2)*num_isolated here because
+    # it leaves isolated-node MPS empty (valid only for h=0).  This Julia implementation
+    # instead populates each isolated node's MPS with the correct scalar value, so the
+    # log(2)*num_isolated offset would double-count that contribution.
+    tn.lnZ = zero(T)
 
     # Build edge_count if not yet initialized (mirrors tn_np.py: select is called
     # inside the loop but edge_count must be valid for select=0 or select=1)

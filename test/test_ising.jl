@@ -1,5 +1,6 @@
 using CATN: ising_network, free_energy, contraction!, magnetization, correlation
 using Test
+using LinearAlgebra
 
 # analytic lnZ of an open Ising chain of L spins, coupling J, no field:
 # Z = 2^L * (cosh(βJ))^(L-1) * ... ; use transfer matrix for the ground truth
@@ -59,4 +60,42 @@ end
     c = correlation(n, edges, w, h, β; Dmax=-1, chi=10_000)
     @test m ≈ m_ref rtol=1e-7
     @test c ≈ c_ref rtol=1e-7
+end
+
+@testset "free_energy consistency" begin
+    # Build a triangle Ising system and verify the free_energy return values
+    # are self-consistent with the total lnZ from an independent contraction.
+    β = 0.45
+    n = 3
+    edges = [(1,2),(2,3),(3,1)]
+    w = [0.6, -0.5, 0.9]; h = [0.15, -0.3, 0.2]
+    # Reference total lnZ from a freshly-built identical network
+    tn_ref = ising_network(n, edges, w, h, β; Dmax=-1, chi=10_000)
+    lnZ_total, _, _ = contraction!(tn_ref)
+    # free_energy builds and contracts the same network internally
+    tn_fe = ising_network(n, edges, w, h, β; Dmax=-1, chi=10_000)
+    lnZ_per_site, F = free_energy(tn_fe)
+    # Check per-site relationship
+    @test lnZ_per_site ≈ lnZ_total / n rtol=1e-9
+    # Check free energy formula: F = -lnZ_per_site / β
+    @test F ≈ -lnZ_total / (n * β) rtol=1e-9
+end
+
+@testset "isolated spin lnZ" begin
+    # A single spin with no edges and an external field h.
+    # The exact partition function is Z = exp(β*h) + exp(-β*h) = 2*cosh(β*h),
+    # so lnZ = log(2*cosh(β*h)).  This exercises the degree-0 / num_isolated path.
+    β = 0.6
+    h = 0.5
+    tn = ising_network(1, Tuple{Int,Int}[], Float64[], [h], β; Dmax=-1, chi=10_000)
+    lnZ, err, psi = contraction!(tn)
+    @test lnZ ≈ log(2 * cosh(β * h)) rtol=1e-9
+    # Zero-field case: Z = 2 → lnZ = log(2)
+    tn0 = ising_network(1, Tuple{Int,Int}[], Float64[], [0.0], β; Dmax=-1, chi=10_000)
+    lnZ0, _, _ = contraction!(tn0)
+    @test lnZ0 ≈ log(2.0) rtol=1e-9
+    # Two isolated spins with different fields: lnZ is additive
+    tn2 = ising_network(2, Tuple{Int,Int}[], Float64[], [h, -h], β; Dmax=-1, chi=10_000)
+    lnZ2, _, _ = contraction!(tn2)
+    @test lnZ2 ≈ log(2 * cosh(β * h)) + log(2 * cosh(β * h)) rtol=1e-9
 end
