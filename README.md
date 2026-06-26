@@ -19,8 +19,7 @@ value = exp(lnZ) * psi    # ≈ tr(A*B*C)
 # Ising free energy on an arbitrary graph
 edges = [(1,2),(2,3),(3,1)]
 tn = ising_network(3, edges, ones(3), zeros(3), 0.4; Dmax=20, chi=200)
-lnZ, _, _ = contraction!(tn)
-lnZ_per_site, F = free_energy(tn)
+lnZ_per_site, F = free_energy(tn)   # free_energy runs the contraction internally
 ```
 
 ## Limitations

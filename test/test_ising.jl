@@ -94,8 +94,9 @@ end
     tn0 = ising_network(1, Tuple{Int,Int}[], Float64[], [0.0], β; Dmax=-1, chi=10_000)
     lnZ0, _, _ = contraction!(tn0)
     @test lnZ0 ≈ log(2.0) rtol=1e-9
-    # Two isolated spins with different fields: lnZ is additive
-    tn2 = ising_network(2, Tuple{Int,Int}[], Float64[], [h, -h], β; Dmax=-1, chi=10_000)
+    # Two isolated spins with DIFFERENT field magnitudes: lnZ is additive and tests unequal factors
+    h1, h2 = 0.3, 0.7
+    tn2 = ising_network(2, Tuple{Int,Int}[], Float64[], [h1, h2], β; Dmax=-1, chi=10_000)
     lnZ2, _, _ = contraction!(tn2)
-    @test lnZ2 ≈ log(2 * cosh(β * h)) + log(2 * cosh(β * h)) rtol=1e-9
+    @test lnZ2 ≈ log(2 * cosh(β * h1)) + log(2 * cosh(β * h2)) rtol=1e-9
 end

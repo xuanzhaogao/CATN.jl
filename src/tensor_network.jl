@@ -520,9 +520,10 @@ Perform the full CATN contraction loop: repeatedly select an edge (i,j), eat
 node j into node i, optionally compress, and accumulate the log-partition
 function `lnZ`, truncation `error`, and phase `psi`.
 
-Mirrors `tn_np.py:294-451`. After the loop, remaining per-node lognorms are
-added and the `log(2)*num_isolated` contribution (already set as the initial
-`lnZ`) is preserved.
+Mirrors `tn_np.py:294-451`. `lnZ` is initialised to zero; isolated nodes
+(degree-0 spins) are already encoded as scalar `(1,1,1)` MPS sites storing
+`2*cosh(β*h_k)`, so their contribution is picked up by `network_lognorm` after
+the loop along with all remaining connected-node lognorms.
 """
 function contraction!(tn::TensorNetwork{T}) where {T}
     error = 0.0
