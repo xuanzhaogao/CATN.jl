@@ -6,6 +6,7 @@ using Random
 
 include("linalg_utils.jl")
 include("mps_node.jl")
+include("tensor_network.jl")
 
 export tsvd, rsvd
 export MPSNode, raw2mps, mps2raw, order, shape
@@ -16,5 +17,6 @@ export logdim, lognorm, clear!
 export merge!
 export compress!, compress_opt!
 export eat!
+export TensorNetwork
 
 end # module
