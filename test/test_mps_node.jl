@@ -1,4 +1,4 @@
-using CATN: MPSNode, mps2raw, raw2mps, order, shape
+using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!
 using LinearAlgebra, Test
 
 @testset "raw2mps/mps2raw round-trip" begin
@@ -16,4 +16,23 @@ using LinearAlgebra, Test
     M = U * V                      # rank 2 matrix, viewed as order-2 tensor
     node = MPSNode(M, [1, 2]; chi=2, cutoff=1e-15)
     @test mps2raw(node) ≈ M atol=1e-10
+end
+
+@testset "canonicalization preserves tensor" begin
+    T = randn(2, 3, 4, 2)
+    node = MPSNode(T, [1,2,3,4]; chi=1000)
+    ref = mps2raw(node)
+    for idx in [1, 2, 3, 4, 0]
+        cano_to!(node, idx)
+        @test mps2raw(node) ≈ ref
+    end
+    left_canonical!(node)
+    @test node.cano == 4
+    @test mps2raw(node) ≈ ref
+    # left-isometry of all but the center after left_canonical!
+    for i in 1:3
+        A = node.mps[i]; dl, d, dr = size(A)
+        M = reshape(A, dl*d, dr)
+        @test M' * M ≈ I atol=1e-8
+    end
 end

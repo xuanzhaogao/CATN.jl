@@ -57,6 +57,48 @@ function mps2raw(node::MPSNode{T}) where {T}
     return reshape(cur, physdims...)            # right bond = 1 collapses
 end
 
+function cano_to!(node::MPSNode, idx::Int)
+    idx == 0 && (idx = length(node.mps))
+    node.cano == idx && return node
+    if node.cano < idx
+        # Sweep right: move center from node.cano to idx
+        for i in node.cano:idx-1
+            dl, d, dr = size(node.mps[i])
+            U, S, V = tsvd(reshape(node.mps[i], dl*d, :); cutoff=node.cutoff)
+            # Reapply cutoff per reference: keep S > cutoff; if none keep all
+            nkeep = count(>(node.cutoff), S)
+            if nkeep == 0
+                nkeep = length(S)   # keep all, not just 1
+            end
+            U = U[:, 1:nkeep]; S = S[1:nkeep]; V = V[:, 1:nkeep]
+            node.mps[i] = reshape(U, dl, d, nkeep)
+            R = Diagonal(S) * V'
+            node.mps[i+1] = ein"ij,jab->iab"(R, node.mps[i+1])
+            node.cano = i + 1
+        end
+    else
+        # Sweep left: move center from node.cano to idx
+        for i in node.cano:-1:idx+1
+            dl, d, dr = size(node.mps[i])
+            Mt = reshape(permutedims(node.mps[i], (2, 3, 1)), d*dr, dl)
+            U, S, V = tsvd(Mt; cutoff=node.cutoff)
+            # Reapply cutoff per reference: keep S > cutoff; if none keep all
+            nkeep = count(>(node.cutoff), S)
+            if nkeep == 0
+                nkeep = length(S)   # keep all, not just 1
+            end
+            U = U[:, 1:nkeep]; S = S[1:nkeep]; V = V[:, 1:nkeep]
+            node.mps[i] = permutedims(reshape(U, d, dr, nkeep), (3, 1, 2))
+            R = Diagonal(S) * V'                     # shape (nkeep, dl)
+            node.mps[i-1] = ein"abc,cd->abd"(node.mps[i-1], permutedims(R, (2, 1)))
+            node.cano = i - 1
+        end
+    end
+    return node
+end
+
+left_canonical!(node::MPSNode) = (node.cano = 1; cano_to!(node, length(node.mps)))
+
 order(node::MPSNode) = length(node.mps)
 
 function shape(node::MPSNode)

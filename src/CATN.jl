@@ -9,5 +9,6 @@ include("mps_node.jl")
 
 export tsvd, rsvd
 export MPSNode, raw2mps, mps2raw, order, shape
+export cano_to!, left_canonical!
 
 end # module
