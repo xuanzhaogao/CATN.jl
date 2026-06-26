@@ -195,6 +195,14 @@ end
 
 For each node id in `nodes`, collect its incident real bonds, then remove those
 pairs from the appropriate buckets in `tn.edge_count`.
+
+!!! warning Ordering precondition
+    This function MUST be called BEFORE any shape mutation (`eat!`/`merge!`) of the
+    incident nodes.  It recomputes each edge's cost via `dim_after_merge`, which reads
+    the current (live) node shapes.  If the shapes have already been mutated the cost
+    lands in the wrong bucket and corrupts `edge_count`.
+    (Mirrors the Python comment at tn_np.py:320:
+     "take care of the count dictionary first because it depends on shape of tensors".)
 """
 function count_remove_nodes!(tn::TensorNetwork, nodes)
     for node_id in nodes
@@ -254,8 +262,7 @@ function select_edge_min_dim_triangle(tn::TensorNetwork)
 
     for pair in candidates
         i, j = pair[1], pair[2]
-        # Real neighbors of i and j (excluding sentinel legs)
-        neigh_i = Set(nb for nb in tn.tensors[i].neighbor if nb > 0 && nb != j)
+        # Real neighbors of j (excluding i and sentinels); we check membership in i's neighbor list
         neigh_j = Set(nb for nb in tn.tensors[j].neighbor if nb > 0 && nb != i)
         # Common neighbors: neighbors of j that also neighbor i
         both = 0
@@ -276,20 +283,27 @@ end
 """
     select_edge_sequentially(tn) -> (i, j)
 
-Select the edge `[i,j]` minimizing `i + j` across all buckets in `tn.edge_count`.
-Mirrors `tn_np.py:select_edge_sequentially`.
+Select the real bond `(i, j)` (with `i < j`) minimising `i + j` by scanning ALL
+current real edges directly from the live node neighbor lists.  This is robust to
+stale `edge_count` state: it never touches `tn.edge_count` and therefore works
+correctly even when `select_edge_init!` has not been called.
+
+Mirrors `tn_np.py:select_edge_sequentially` (which iterates `self.G.edges()`).
 """
 function select_edge_sequentially(tn::TensorNetwork)
-    best_pair = nothing
-    best_sum = typemax(Int)
-    for (_, bucket) in tn.edge_count
-        for pair in bucket
-            s = pair[1] + pair[2]
-            if s < best_sum
-                best_sum = s
-                best_pair = pair
+    best = nothing
+    bestsum = typemax(Int)
+    for i in keys(tn.tensors)
+        for nb in tn.tensors[i].neighbor
+            nb > 0 || continue          # skip open-leg sentinels
+            i < nb || continue          # each undirected edge once, canonical order
+            s = i + nb
+            if s < bestsum
+                bestsum = s
+                best = (i, nb)
             end
         end
     end
-    return (best_pair[1], best_pair[2])
+    best === nothing && error("select_edge_sequentially: no edges remain")
+    return best
 end

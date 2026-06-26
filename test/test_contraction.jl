@@ -1,5 +1,5 @@
 using CATN: TensorNetwork, MPSNode, mps2raw, order
-using CATN: dim_after_merge, select_edge_init!, select_edge_min_dim
+using CATN: dim_after_merge, select_edge_init!, select_edge_min_dim, select_edge_sequentially
 using Test
 # exact_contract is available from exact.jl (included earlier in runtests.jl)
 
@@ -15,8 +15,6 @@ using Test
     @test tn.num_isolated == 0
 end
 
-using CATN: dim_after_merge, select_edge_init!, select_edge_min_dim
-
 @testset "edge selection" begin
     A = randn(2,2); B = randn(2,2); C = randn(2,8); D = randn(8,2)
     # chain 1-2-3-4 with a fat bond between 3 and 4
@@ -25,4 +23,16 @@ using CATN: dim_after_merge, select_edge_init!, select_edge_min_dim
     select_edge_init!(tn)
     i, j = select_edge_min_dim(tn)
     @test Set([i,j]) != Set([3,4])             # the fat bond is the costliest, not chosen first
+end
+
+@testset "select_edge_sequentially" begin
+    # Triangle network: nodes 1-2, 2-3, 3-1.  All bonds have equal bond dim (2).
+    # The edge with smallest i+j is (1,2) with sum=3 < (1,3)=4 < (2,3)=5.
+    # The rewritten selector scans nodes directly, so select_edge_init! is NOT required.
+    A = randn(2,2); B = randn(2,2); C = randn(2,2)
+    ixs = [[:a,:b], [:b,:c], [:c,:a]]
+    tn = TensorNetwork([A,B,C], ixs; chi=1000)
+    # No select_edge_init! call — verify the selector works without edge_count
+    result = select_edge_sequentially(tn)
+    @test result == (1, 2)
 end
