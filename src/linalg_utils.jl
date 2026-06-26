@@ -10,7 +10,8 @@ algorithm if the divide-and-conquer driver fails (cf. npsvd.py gesvd fallback).
 function tsvd(A::AbstractMatrix; cutoff::Real=1e-15, maxdim::Int=typemax(Int))
     F = try
         svd(A)
-    catch
+    catch e
+        e isa LinearAlgebra.LAPACKException || rethrow()
         svd(A; alg=LinearAlgebra.QRIteration())
     end
     S = F.S
@@ -26,11 +27,11 @@ Randomized SVD (port of npsvd.py:rsvd) with `A ≈ U * Diagonal(S) * V'`.
 """
 function rsvd(A::AbstractMatrix{T}, k::Int, oversample::Int=10, power::Int=10;
              rng::AbstractRNG=Random.default_rng()) where {T}
-    m, n = size(A)
+    n = size(A, 2)
     p = min(n, oversample * k)
     Y = A * randn(rng, T, n, p)
     for _ in 1:power
-        Y = A * (A' * Y)
+        Y = Matrix(qr(A * (A' * Y)).Q)
     end
     Q = Matrix(qr(Y).Q)
     B = Q' * A
