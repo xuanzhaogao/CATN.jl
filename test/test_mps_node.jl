@@ -1,4 +1,4 @@
-using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!, merge!, compress!, compress_opt!
+using CATN: MPSNode, mps2raw, raw2mps, order, shape, cano_to!, left_canonical!, merge!, compress!, compress_opt!, eat!
 using LinearAlgebra, Test
 
 @testset "raw2mps/mps2raw round-trip" begin
@@ -126,4 +126,29 @@ end
     # Fusing dims 1 and 2 in column-major order: reshape to (2*3, 5)
     expected = reshape(permutedims(T, (1, 3, 2)), 2*3, 5)
     @test reshape(raw, size(raw, 1), size(raw, 2)) ≈ expected
+end
+
+using CATN: eat!
+
+@testset "eat! equals direct contraction" begin
+    # general case: node i (legs a,b,c -> neighbors 1,2,3), node j (legs c',d -> 3,4)
+    Ti = randn(2,3,4); Tj = randn(4,5)
+    nodei = MPSNode(Ti, [1,2,3]; chi=1000, norm_method=0)
+    nodej = MPSNode(Tj, [3,4]; chi=1000, norm_method=0)
+    idx  = find_neighbor(nodei, 3)     # = 3
+    idxi = find_neighbor(nodej, 3)     # = 1
+    lognorm, err, phase = eat!(nodei, nodej, idx, idxi)
+    @test nodei.neighbor == sort(nodei.neighbor)  # legs now 1,2,4 (order per reference)
+    raw = mps2raw(nodei) .* exp(lognorm)
+    expected = ein"abc,cd->abd"(Ti, Tj)           # legs a,b,d
+    @test sort(collect(size(raw))) == sort(collect(size(expected)))
+    @test vec(sort(vec(raw))) ≈ vec(sort(vec(expected))) atol=1e-8
+end
+
+@testset "eat! both leaves -> scalar" begin
+    u = randn(3); v = randn(3)
+    ni = MPSNode(u, [2]; norm_method=0); nj = MPSNode(v, [1]; norm_method=0)
+    lognorm, err, phase = eat!(ni, nj, 1, 1)
+    @test isempty(ni.mps)
+    @test exp(lognorm) * phase ≈ dot(u, v)
 end

@@ -432,6 +432,128 @@ function compress_opt!(node::MPSNode)
 end
 
 """
+    eat!(node, nodej, idx, idxi) -> (lognorm::Float64, error::Float64, phase)
+
+Contract physical leg `idx` of `node` with leg `idxi` of `nodej`, appending all
+remaining sites of `nodej` to `node`.  Returns `(lognorm, error, phase)` where
+`lognorm` is the accumulated log-norm extracted during normalization, `error` is
+the accumulated truncation error from bond-dimension compression during swaps,
+and `phase` is the sign/phase of the result.
+
+Three cases (mirroring `mps_node_np.py:407-487`):
+- (a) Both nodes are single-site leaves → scalar dot product, `node.mps` becomes empty.
+- (b) `nodej` is a single-site leaf, `node` is not → fold into node's tail-1 site.
+- (c) General → move contracting sites to boundaries, contract, append, re-canonicalize.
+"""
+function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T}
+    error = 0.0
+
+    # -----------------------------------------------------------------------
+    # Case (a): both nodes are single-site leaves
+    # -----------------------------------------------------------------------
+    if length(node.mps) == 1
+        # By convention (mirrors Python assert), nodej must also be a leaf
+        @assert length(nodej.mps) == 1
+        # mps[1] has shape (1, d, 1); contract along the physical leg
+        vi = vec(node.mps[1])    # length d
+        vj = vec(nodej.mps[1])   # length d
+        r  = dot(vi, vj)
+        absr = abs(r)
+        lognorm_val = log(absr)
+        node.mps = Array{T,3}[]
+        # Remove contracted neighbors from both
+        deleteat!(node.neighbor, idx)
+        # nodej's remaining neighbors (after removing idxi) — none for single site
+        return (lognorm_val, 0.0, r / absr)
+    end
+
+    # move contracting site of node to tail; mati = (D_left, d_phys)
+    error += move2tail!(node, idx)
+    mati = reshape(node.mps[end], size(node.mps[end], 1), size(node.mps[end], 2))
+
+    # -----------------------------------------------------------------------
+    # Case (b): nodej is a single-site leaf, node is not
+    # -----------------------------------------------------------------------
+    if length(nodej.mps) == 1
+        tensorj = nodej.mps[1]
+        matj = reshape(tensorj, size(tensorj, 2), 1)   # (d_phys, 1)
+        mat  = mati * matj                              # (D_left_i, 1)
+
+        # fold mat into the second-to-last site: "ijk,ka->ija"
+        new_tensor = ein"ijk,ka->ija"(node.mps[end-1], mat)
+
+        # normalize
+        if node.norm_method == 1
+            norm = LinearAlgebra.norm(vec(new_tensor))
+        elseif node.norm_method == 2
+            norm = maximum(abs, new_tensor)
+        else  # norm_method == 0
+            norm = one(real(T))
+        end
+
+        if norm <= node.cutoff
+            node.mps[end-1] = new_tensor / (norm + eps(real(T)))
+            node.cano = node.cano - 1
+            pop!(node.mps)
+            # Update neighbors: remove the contracted leg (now at end after move2tail!)
+            deleteat!(node.neighbor, length(node.neighbor))
+            return (0.0, error, 1)
+        end
+
+        node.mps[end-1] = new_tensor / norm
+        node.cano = node.cano - 1
+        pop!(node.mps)
+        # Update neighbors: remove the contracted leg (now at position end after move2tail!)
+        deleteat!(node.neighbor, length(node.neighbor))
+        return (log(norm), error, 1)
+    end
+
+    # -----------------------------------------------------------------------
+    # Case (c): general — both nodes have multiple sites
+    # -----------------------------------------------------------------------
+    error += move2head!(nodej, idxi)
+    matj = reshape(nodej.mps[1], size(nodej.mps[1], 2), size(nodej.mps[1], 3))  # (d_phys, D_right)
+
+    mat = mati * matj   # (D_left_i, D_right_j)
+
+    # fold mat into second-to-last site of node: "ijk,ka->ija"
+    node.mps[end-1] = ein"ijk,ka->ija"(node.mps[end-1], mat)
+    pop!(node.mps)
+
+    # append nodej's remaining sites (2:end)
+    append!(node.mps, nodej.mps[2:end])
+
+    # update canonical center to new last site
+    node.cano = length(node.mps)
+
+    # Update neighbors: remove contracted leg from node (it was moved to end by move2tail!)
+    # and append nodej's remaining neighbors (2:end, since idxi was moved to head)
+    deleteat!(node.neighbor, length(node.neighbor))
+    append!(node.neighbor, nodej.neighbor[2:end])
+
+    # re-canonicalize to tail (index -1 in Python = last site in Julia)
+    cano_to!(node, length(node.mps))
+
+    center = node.mps[node.cano]
+
+    # normalize
+    if node.norm_method == 1
+        norm = LinearAlgebra.norm(vec(center))
+    elseif node.norm_method == 2
+        norm = maximum(abs, center)
+    else  # norm_method == 0
+        norm = one(real(T))
+    end
+
+    if norm <= node.cutoff
+        return (0.0, error, 1)
+    end
+
+    node.mps[node.cano] = center / norm
+    return (log(norm), error, 1)
+end
+
+"""
     merge!(node, j; cross=false) -> Float64
 
 Fuse the two MPS sites whose `neighbor == j` (a duplicate edge that arises

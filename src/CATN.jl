@@ -15,5 +15,6 @@ export find_neighbor, add_neighbor!, delete_neighbor!
 export logdim, lognorm, clear!
 export merge!
 export compress!, compress_opt!
+export eat!
 
 end # module
