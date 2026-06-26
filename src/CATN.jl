@@ -18,5 +18,9 @@ export merge!
 export compress!, compress_opt!
 export eat!
 export TensorNetwork
+export dim_after_merge
+export count_add_edges!, count_add_nodes!, count_remove_nodes!
+export select_edge_init!
+export select_edge_min_dim, select_edge_min_dim_triangle, select_edge_sequentially
 
 end # module

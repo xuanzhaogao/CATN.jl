@@ -133,3 +133,163 @@ function TensorNetwork(
         MersenneTwister(seed)
     )
 end
+
+# ---------------------------------------------------------------------------
+# Edge dimension helpers
+# ---------------------------------------------------------------------------
+
+"""
+    dim_after_merge(tn, i, j) -> Int
+
+Log₂ of the size of the intermediate tensor produced by contracting nodes i and j.
+Mirrors `tn_np.py:dim_after_merge`.
+"""
+function dim_after_merge(tn::TensorNetwork, i::Int, j::Int)
+    idx_j_in_i = find_neighbor(tn.tensors[i], j)
+    return round(Int, logdim(tn.tensors[i]) + logdim(tn.tensors[j]) - 2 * logdim(tn.tensors[i], idx_j_in_i))
+end
+
+# ---------------------------------------------------------------------------
+# edge_count bookkeeping
+# ---------------------------------------------------------------------------
+
+"""
+    count_add_edges!(tn, edges)
+
+For each sorted `[i,j]` pair in `edges`, compute `dim_after_merge(tn,i,j)` and
+push the pair into the corresponding bucket of `tn.edge_count`.
+"""
+function count_add_edges!(tn::TensorNetwork, edges)
+    for pair in edges
+        i, j = pair[1], pair[2]
+        cost = dim_after_merge(tn, i, j)
+        if !haskey(tn.edge_count, cost)
+            tn.edge_count[cost] = Vector{Int}[]
+        end
+        push!(tn.edge_count[cost], [i, j])
+    end
+end
+
+"""
+    count_add_nodes!(tn, nodes)
+
+For each node id in `nodes`, collect its incident real bonds (neighbor > 0),
+deduplicate into sorted `[i,j]` pairs, and call `count_add_edges!`.
+Edges are processed in lexicographic order to ensure deterministic bucket ordering.
+"""
+function count_add_nodes!(tn::TensorNetwork, nodes)
+    edges = Set{Vector{Int}}()
+    for i in nodes
+        for j in tn.tensors[i].neighbor
+            j <= 0 && continue  # skip open legs / sentinels
+            push!(edges, sort([i, j]))
+        end
+    end
+    # Sort edges lexicographically for deterministic insertion order (matches Python reference)
+    sorted_edges = sort(collect(edges))
+    count_add_edges!(tn, sorted_edges)
+end
+
+"""
+    count_remove_nodes!(tn, nodes)
+
+For each node id in `nodes`, collect its incident real bonds, then remove those
+pairs from the appropriate buckets in `tn.edge_count`.
+"""
+function count_remove_nodes!(tn::TensorNetwork, nodes)
+    for node_id in nodes
+        for nb in tn.tensors[node_id].neighbor
+            nb <= 0 && continue  # skip open legs / sentinels
+            i, j = sort([node_id, nb])
+            cost = dim_after_merge(tn, i, j)
+            if haskey(tn.edge_count, cost)
+                filter!(pair -> pair != [i, j], tn.edge_count[cost])
+            end
+        end
+    end
+end
+
+"""
+    select_edge_init!(tn)
+
+Clear `tn.edge_count` and rebuild it from all current real bonds in the network.
+Mirrors `tn_np.py:select_edge_init`.
+"""
+function select_edge_init!(tn::TensorNetwork)
+    empty!(tn.edge_count)
+    count_add_nodes!(tn, collect(keys(tn.tensors)))
+end
+
+# ---------------------------------------------------------------------------
+# Edge selectors
+# ---------------------------------------------------------------------------
+
+"""
+    select_edge_min_dim(tn) -> (i, j)
+
+Select the edge with the smallest `dim_after_merge` cost (cheapest contraction).
+Updates `tn.maxdim_intermediate`. Mirrors `tn_np.py:select_edge_min_dim`.
+"""
+function select_edge_min_dim(tn::TensorNetwork)
+    cost = minimum(k for (k, v) in tn.edge_count if !isempty(v))
+    tn.maxdim_intermediate = max(tn.maxdim_intermediate, cost)
+    pair = tn.edge_count[cost][1]
+    return (pair[1], pair[2])
+end
+
+"""
+    select_edge_min_dim_triangle(tn) -> (i, j)
+
+Among the cheapest edges, pick the one whose endpoints share the most common
+neighbors (triangle heuristic). Updates `tn.maxdim_intermediate`.
+Mirrors `tn_np.py:select_edge_min_dim_triangle`.
+"""
+function select_edge_min_dim_triangle(tn::TensorNetwork)
+    cost = minimum(k for (k, v) in tn.edge_count if !isempty(v))
+    tn.maxdim_intermediate = max(tn.maxdim_intermediate, cost)
+    candidates = tn.edge_count[cost]
+
+    best_pair = candidates[1]
+    best_count = -1
+
+    for pair in candidates
+        i, j = pair[1], pair[2]
+        # Real neighbors of i and j (excluding sentinel legs)
+        neigh_i = Set(nb for nb in tn.tensors[i].neighbor if nb > 0 && nb != j)
+        neigh_j = Set(nb for nb in tn.tensors[j].neighbor if nb > 0 && nb != i)
+        # Common neighbors: neighbors of j that also neighbor i
+        both = 0
+        for k in neigh_j
+            if find_neighbor(tn.tensors[k], i) > 0
+                both += 1
+            end
+        end
+        if both > best_count
+            best_count = both
+            best_pair = pair
+        end
+    end
+
+    return (best_pair[1], best_pair[2])
+end
+
+"""
+    select_edge_sequentially(tn) -> (i, j)
+
+Select the edge `[i,j]` minimizing `i + j` across all buckets in `tn.edge_count`.
+Mirrors `tn_np.py:select_edge_sequentially`.
+"""
+function select_edge_sequentially(tn::TensorNetwork)
+    best_pair = nothing
+    best_sum = typemax(Int)
+    for (_, bucket) in tn.edge_count
+        for pair in bucket
+            s = pair[1] + pair[2]
+            if s < best_sum
+                best_sum = s
+                best_pair = pair
+            end
+        end
+    end
+    return (best_pair[1], best_pair[2])
+end
