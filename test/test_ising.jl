@@ -1,4 +1,4 @@
-using CATN: ising_network, free_energy, contraction!
+using CATN: ising_network, free_energy, contraction!, magnetization, correlation
 using Test
 
 # analytic lnZ of an open Ising chain of L spins, coupling J, no field:
@@ -36,4 +36,27 @@ end
     tn = ising_network(3, edges, w, h, β; Dmax=-1, chi=10_000)
     lnZ, _, _ = contraction!(tn)
     @test lnZ ≈ brute(edges, w, h, β, 3) rtol=1e-9
+end
+
+@testset "magnetization & correlation vs brute force" begin
+    β = 0.35
+    edges = [(1,2),(2,3),(3,1)]
+    w = [0.4, 0.6, -0.3]; h = [0.1, -0.2, 0.05]; n = 3
+    function brute_obs(edges, w, h, β, n)
+        Z = 0.0; m = zeros(n); c = zeros(length(edges))
+        for bits in 0:(2^n-1)
+            s = [(bits >> (k-1)) & 1 == 1 ? 1 : -1 for k in 1:n]
+            E = sum(w[e]*s[edges[e][1]]*s[edges[e][2]] for e in eachindex(edges)) +
+                sum(h[k]*s[k] for k in 1:n)
+            p = exp(β*E); Z += p
+            for k in 1:n; m[k] += p*s[k]; end
+            for e in eachindex(edges); c[e] += p*s[edges[e][1]]*s[edges[e][2]]; end
+        end
+        return m./Z, c./Z
+    end
+    m_ref, c_ref = brute_obs(edges, w, h, β, n)
+    m = magnetization(n, edges, w, h, β; Dmax=-1, chi=10_000)
+    c = correlation(n, edges, w, h, β; Dmax=-1, chi=10_000)
+    @test m ≈ m_ref rtol=1e-7
+    @test c ≈ c_ref rtol=1e-7
 end
