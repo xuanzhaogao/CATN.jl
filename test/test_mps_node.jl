@@ -128,8 +128,6 @@ end
     @test reshape(raw, size(raw, 1), size(raw, 2)) ≈ expected
 end
 
-using CATN: eat!
-
 @testset "eat! equals direct contraction" begin
     # general case: node i (legs a,b,c -> neighbors 1,2,3), node j (legs c',d -> 3,4)
     Ti = randn(2,3,4); Tj = randn(4,5)
@@ -151,4 +149,18 @@ end
     lognorm, err, phase = eat!(ni, nj, 1, 1)
     @test isempty(ni.mps)
     @test exp(lognorm) * phase ≈ dot(u, v)
+end
+
+@testset "eat! nodej is a leaf (case b)" begin
+    Ti = randn(2, 4)        # node: legs -> neighbors [5, 9]
+    Tj = randn(4)           # nodej leaf: leg -> neighbor [9]
+    nodei = MPSNode(Ti, [5, 9]; chi=1000, norm_method=0)
+    nodej = MPSNode(Tj, [9]; chi=1000, norm_method=0)
+    idx  = find_neighbor(nodei, 9)   # 2
+    idxi = find_neighbor(nodej, 9)   # 1
+    lognorm, err, phase = eat!(nodei, nodej, idx, idxi)
+    @test nodei.neighbor == [5]
+    raw = mps2raw(nodei) .* (exp(lognorm) * phase)
+    expected = ein"ab,b->a"(Ti, Tj)
+    @test vec(raw) ≈ vec(expected) atol=1e-8
 end

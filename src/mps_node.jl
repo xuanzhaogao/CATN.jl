@@ -463,7 +463,7 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
             node.mps = Array{T,3}[]
             # remove contracted leg from node.neighbor
             deleteat!(node.neighbor, idx)
-            return (0.0, 0.0, 1)
+            return (0.0, 0.0, one(T))
         end
         lognorm_val = log(absr)
         node.mps = Array{T,3}[]
@@ -505,11 +505,11 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
         deleteat!(node.neighbor, length(node.neighbor))
 
         if norm <= node.cutoff
-            return (0.0, error, 1)
+            return (0.0, error, one(T))
         end
 
         node.mps[end] ./= norm
-        return (log(norm), error, 1)
+        return (log(norm), error, one(T))
     end
 
     # -----------------------------------------------------------------------
@@ -535,7 +535,8 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
     deleteat!(node.neighbor, length(node.neighbor))
     append!(node.neighbor, nodej.neighbor[2:end])
 
-    # re-canonicalize to tail (index -1 in Python = last site in Julia)
+    # re-canonicalize to tail (cano was just set to last site above, so this is a no-op;
+    # kept for faithfulness to the Python reference)
     cano_to!(node, length(node.mps))
 
     center = node.mps[node.cano]
@@ -550,11 +551,11 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
     end
 
     if norm <= node.cutoff
-        return (0.0, error, 1)
+        return (0.0, error, one(T))
     end
 
     node.mps[node.cano] = center / norm
-    return (log(norm), error, 1)
+    return (log(norm), error, one(T))
 end
 
 """
