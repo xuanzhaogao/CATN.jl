@@ -307,3 +307,163 @@ function select_edge_sequentially(tn::TensorNetwork)
     best === nothing && error("select_edge_sequentially: no edges remain")
     return best
 end
+
+# ---------------------------------------------------------------------------
+# Physical-bond truncation
+# ---------------------------------------------------------------------------
+
+"""
+    cut_bondim!(tn, i, idx_j_in_i) -> Float64
+
+SVD-truncate the shared physical bond between node `i` (leg `idx_j_in_i`) and
+its neighbor `j` to `tn.Dmax`.  Returns the discarded singular-value weight.
+
+When `tn.Dmax < 0` the function is a no-op and returns `0.0` (exact mode).
+
+Index math (mirrors `tn_np.py:482`):
+- `j = node_i.neighbor[idx_j_in_i]`
+- `idx_i_in_j = find_neighbor(node_j, i)`
+- `Ai = mps_i[idx_j_in_i]` shape `(da_l, d, da_r)`;
+  `Aj = mps_j[idx_i_in_j]` shape `(db_l, d, db_r)`
+- Form `mati = reshape(permutedims(Ai,(1,3,2)), da_l*da_r, d)`,
+        `matj = reshape(permutedims(Aj,(1,3,2)), db_l*db_r, d)`
+- `merged = mati * matj'`, `tsvd` → keep `min(nnz, Dmax)` singular values
+- Split `mati = U * Diagonal(sqrt.(S))`,
+        `matj = V * Diagonal(sqrt.(S))` (so `mati * matj' = U S V'`)
+- Reshape back and store.
+"""
+function cut_bondim!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
+    tn.Dmax < 0 && return 0.0
+
+    node_i = tn.tensors[i]
+    j = node_i.neighbor[idx_j_in_i]
+    j <= 0 && error("cut_bondim!: leg $idx_j_in_i of node $i is an open leg (no neighbor)")
+
+    node_j = tn.tensors[j]
+    idx_i_in_j = find_neighbor(node_j, i)
+    idx_i_in_j == 0 && error("cut_bondim!: node $i not found as neighbor of node $j")
+
+    # Extract the physical-bond tensors
+    Ai = node_i.mps[idx_j_in_i]   # (da_l, d, da_r)
+    Aj = node_j.mps[idx_i_in_j]   # (db_l, d, db_r)
+
+    da_l, d, da_r = size(Ai)
+    db_l, _d, db_r = size(Aj)
+
+    # Reshape: merge virtual bonds, physical bond last
+    mati = reshape(permutedims(Ai, (1, 3, 2)), da_l * da_r, d)   # (da_l*da_r, d)
+    matj = reshape(permutedims(Aj, (1, 3, 2)), db_l * db_r, d)   # (db_l*db_r, d)
+
+    # Merge and SVD
+    merged = mati * matj'   # (da_l*da_r, db_l*db_r)
+    U, S, V, discarded_base = tsvd(merged; cutoff=tn.cutoff)
+
+    # Apply Dmax truncation on top of cutoff truncation
+    myd = min(length(S), tn.Dmax)
+    myd == 0 && (myd = 1)
+
+    extra_discarded = myd < length(S) ? sum(S[myd+1:end]) : 0.0
+    error = discarded_base + extra_discarded
+
+    S = S[1:myd]
+    U = U[:, 1:myd]
+    V = V[:, 1:myd]
+
+    sqS = sqrt.(S)
+    mati = U * Diagonal(sqS)   # (da_l*da_r, myd)
+    matj = V * Diagonal(sqS)   # (db_l*db_r, myd)
+
+    # Reshape back: (rows, myd) → (left_bond, right_bond, myd) → permute → (left_bond, myd, right_bond)
+    node_i.mps[idx_j_in_i] = permutedims(reshape(mati, da_l, da_r, myd), (1, 3, 2))
+    node_j.mps[idx_i_in_j] = permutedims(reshape(matj, db_l, db_r, myd), (1, 3, 2))
+
+    return error
+end
+
+"""
+    cut_bondim_opt!(tn, i, idx_j_in_i) -> Float64
+
+Like `cut_bondim!` but first canonicalizes both nodes to the shared leg (via
+`cano_to!`) and then applies QR pre-reduction before SVD to reduce the SVD
+matrix size.  Mirrors `tn_np.py:598`.
+
+When `tn.Dmax < 0` the function is a no-op and returns `0.0`.
+"""
+function cut_bondim_opt!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
+    tn.Dmax < 0 && return 0.0
+
+    node_i = tn.tensors[i]
+    j = node_i.neighbor[idx_j_in_i]
+    j <= 0 && error("cut_bondim_opt!: leg $idx_j_in_i of node $i is an open leg (no neighbor)")
+
+    node_j = tn.tensors[j]
+    idx_i_in_j = find_neighbor(node_j, i)
+    idx_i_in_j == 0 && error("cut_bondim_opt!: node $i not found as neighbor of node $j")
+
+    # Canonicalize both nodes to the shared leg
+    cano_to!(node_i, idx_j_in_i)
+    cano_to!(node_j, idx_i_in_j)
+
+    # Extract the physical-bond tensors
+    Ai = node_i.mps[idx_j_in_i]   # (da_l, d, da_r)
+    Aj = node_j.mps[idx_i_in_j]   # (db_l, d, db_r)
+
+    da_l, d, da_r = size(Ai)
+    db_l, _d, db_r = size(Aj)
+
+    # Reshape: merge virtual bonds, physical bond last
+    mati = reshape(permutedims(Ai, (1, 3, 2)), da_l * da_r, d)   # (da_l*da_r, d)
+    matj = reshape(permutedims(Aj, (1, 3, 2)), db_l * db_r, d)   # (db_l*db_r, d)
+
+    # QR pre-reduction to reduce SVD cost (mirrors tn_np.py:632-644)
+    flag_left = false
+    qi = nothing
+    if size(mati, 1) > size(mati, 2)
+        F = qr(mati)
+        qi = Matrix(F.Q)
+        ri = Matrix(F.R)
+        flag_left = true
+    else
+        ri = mati
+    end
+
+    flag_right = false
+    qj = nothing
+    if size(matj, 1) > size(matj, 2)
+        F = qr(matj)
+        qj = Matrix(F.Q)
+        rj = Matrix(F.R)
+        flag_right = true
+    else
+        rj = matj
+    end
+
+    # Merge and SVD
+    merged = ri * rj'
+    U, S, V, discarded_base = tsvd(merged; cutoff=tn.cutoff)
+
+    # Apply Dmax truncation on top of cutoff truncation
+    myd = min(length(S), tn.Dmax)
+    myd == 0 && (myd = 1)
+
+    extra_discarded = myd < length(S) ? sum(S[myd+1:end]) : 0.0
+    error = discarded_base + extra_discarded
+
+    S = S[1:myd]
+    U = U[:, 1:myd]
+    V = V[:, 1:myd]
+
+    sqS = sqrt.(S)
+    mati = U * Diagonal(sqS)   # (size_ri_rows, myd) or (da_l*da_r, myd)
+    matj = V * Diagonal(sqS)   # (size_rj_rows, myd)
+
+    # Re-apply Q factors if QR was used
+    flag_left  && (mati = qi * mati)
+    flag_right && (matj = qj * matj)
+
+    # Reshape back
+    node_i.mps[idx_j_in_i] = permutedims(reshape(mati, da_l, da_r, myd), (1, 3, 2))
+    node_j.mps[idx_i_in_j] = permutedims(reshape(matj, db_l, db_r, myd), (1, 3, 2))
+
+    return error
+end
