@@ -64,12 +64,9 @@ function cano_to!(node::MPSNode, idx::Int)
         # Sweep right: move center from node.cano to idx
         for i in node.cano:idx-1
             dl, d, dr = size(node.mps[i])
-            U, S, V = tsvd(reshape(node.mps[i], dl*d, :); cutoff=node.cutoff)
-            # Reapply cutoff per reference: keep S > cutoff; if none keep all
+            U, S, V = tsvd(reshape(node.mps[i], dl*d, :); cutoff=0.0)
             nkeep = count(>(node.cutoff), S)
-            if nkeep == 0
-                nkeep = length(S)   # keep all, not just 1
-            end
+            nkeep = nkeep == 0 ? length(S) : nkeep
             U = U[:, 1:nkeep]; S = S[1:nkeep]; V = V[:, 1:nkeep]
             node.mps[i] = reshape(U, dl, d, nkeep)
             R = Diagonal(S) * V'
@@ -81,12 +78,9 @@ function cano_to!(node::MPSNode, idx::Int)
         for i in node.cano:-1:idx+1
             dl, d, dr = size(node.mps[i])
             Mt = reshape(permutedims(node.mps[i], (2, 3, 1)), d*dr, dl)
-            U, S, V = tsvd(Mt; cutoff=node.cutoff)
-            # Reapply cutoff per reference: keep S > cutoff; if none keep all
+            U, S, V = tsvd(Mt; cutoff=0.0)
             nkeep = count(>(node.cutoff), S)
-            if nkeep == 0
-                nkeep = length(S)   # keep all, not just 1
-            end
+            nkeep = nkeep == 0 ? length(S) : nkeep
             U = U[:, 1:nkeep]; S = S[1:nkeep]; V = V[:, 1:nkeep]
             node.mps[i] = permutedims(reshape(U, d, dr, nkeep), (3, 1, 2))
             R = Diagonal(S) * V'                     # shape (nkeep, dl)

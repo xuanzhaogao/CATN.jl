@@ -36,3 +36,14 @@ end
         @test M' * M ≈ I atol=1e-8
     end
 end
+
+@testset "cano_to! preserves rank for tiny-norm tensor" begin
+    T = randn(2,3,4,2) .* 1e-16
+    node = MPSNode(T, [1,2,3,4]; chi=1000, cutoff=0.0)  # build at full rank
+    node.cutoff = 1e-15                                   # buggy cano_to! would now collapse
+    ref = mps2raw(node)
+    cano_to!(node, 1)                                     # full left sweep
+    @test mps2raw(node) ≈ ref rtol=1e-8
+    cano_to!(node, 4)                                     # full right sweep
+    @test mps2raw(node) ≈ ref rtol=1e-8
+end
