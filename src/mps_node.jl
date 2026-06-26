@@ -459,6 +459,12 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
         vj = vec(nodej.mps[1])   # length d
         r  = dot(vi, vj)
         absr = abs(r)
+        if absr <= node.cutoff
+            node.mps = Array{T,3}[]
+            # remove contracted leg from node.neighbor
+            deleteat!(node.neighbor, idx)
+            return (0.0, 0.0, 1)
+        end
         lognorm_val = log(absr)
         node.mps = Array{T,3}[]
         # Remove contracted neighbors from both
@@ -491,20 +497,18 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
             norm = one(real(T))
         end
 
+        # Store new_tensor unconditionally (unnormalized), then pop the contracted tail
+        node.mps[end-1] = new_tensor
+        node.cano = node.cano - 1
+        pop!(node.mps)
+        # Update neighbors: remove the contracted leg (now at end after move2tail!)
+        deleteat!(node.neighbor, length(node.neighbor))
+
         if norm <= node.cutoff
-            node.mps[end-1] = new_tensor / (norm + eps(real(T)))
-            node.cano = node.cano - 1
-            pop!(node.mps)
-            # Update neighbors: remove the contracted leg (now at end after move2tail!)
-            deleteat!(node.neighbor, length(node.neighbor))
             return (0.0, error, 1)
         end
 
-        node.mps[end-1] = new_tensor / norm
-        node.cano = node.cano - 1
-        pop!(node.mps)
-        # Update neighbors: remove the contracted leg (now at position end after move2tail!)
-        deleteat!(node.neighbor, length(node.neighbor))
+        node.mps[end] ./= norm
         return (log(norm), error, 1)
     end
 
