@@ -47,3 +47,32 @@ end
     cano_to!(node, 4)                                     # full right sweep
     @test mps2raw(node) ≈ ref rtol=1e-8
 end
+
+using CATN: swap!, reverse!, move2tail!, move2head!, move!, find_neighbor,
+            add_neighbor!, delete_neighbor!, logdim, lognorm, clear!
+
+@testset "swap/reverse preserve tensor (up to leg permutation)" begin
+    T = randn(2, 3, 4, 5)
+    node = MPSNode(T, [10,20,30,40]; chi=1000)
+    swap!(node, 2, 3)                       # swap legs 2 and 3
+    @test node.neighbor == [10,30,20,40]
+    @test mps2raw(node) ≈ permutedims(T, (1,3,2,4))
+
+    node2 = MPSNode(T, [10,20,30,40]; chi=1000)
+    reverse!(node2)
+    @test node2.neighbor == [40,30,20,10]
+    @test mps2raw(node2) ≈ permutedims(T, (4,3,2,1))
+
+    node3 = MPSNode(T, [10,20,30,40]; chi=1000)
+    move2tail!(node3, 1)                    # move first leg to the end
+    @test node3.neighbor[end] == 10
+    @test mps2raw(node3) ≈ permutedims(T, (2,3,4,1))
+end
+
+@testset "neighbor helpers" begin
+    node = MPSNode(randn(2,2,2), [5,6,7])
+    @test find_neighbor(node, 6) == 2
+    @test find_neighbor(node, 99) == 0
+    delete_neighbor!(node, 6)
+    @test node.neighbor == [5,7]
+end
