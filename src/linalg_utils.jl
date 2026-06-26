@@ -2,10 +2,15 @@ using LinearAlgebra
 using Random
 
 """
-    tsvd(A; cutoff=1e-15, maxdim=typemax(Int)) -> (U, S, V)
+    tsvd(A; cutoff=1e-15, maxdim=typemax(Int)) -> (U, S, V, discarded)
 
 Truncated thin SVD with `A ≈ U * Diagonal(S) * V'`. Falls back to the QR-iteration
 algorithm if the divide-and-conquer driver fails (cf. npsvd.py gesvd fallback).
+
+The 4th return value `discarded` is the sum of all singular values beyond the kept
+set (i.e. those dropped by the `cutoff` or `maxdim` truncation). Existing callers
+using `U, S, V = tsvd(...)` are unaffected — Julia tuple-destructuring ignores
+extra elements.
 """
 function tsvd(A::AbstractMatrix; cutoff::Real=1e-15, maxdim::Int=typemax(Int))
     F = try
@@ -15,9 +20,11 @@ function tsvd(A::AbstractMatrix; cutoff::Real=1e-15, maxdim::Int=typemax(Int))
         svd(A; alg=LinearAlgebra.QRIteration())
     end
     S = F.S
+    nfull = length(S)
     nkeep = count(>(cutoff), S)
-    nkeep = nkeep == 0 ? 1 : min(nkeep, maxdim, length(S))
-    return F.U[:, 1:nkeep], S[1:nkeep], F.V[:, 1:nkeep]
+    nkeep = nkeep == 0 ? 1 : min(nkeep, maxdim, nfull)
+    discarded = nkeep < nfull ? sum(@view S[nkeep+1:nfull]) : zero(eltype(S))
+    return F.U[:, 1:nkeep], S[1:nkeep], F.V[:, 1:nkeep], discarded
 end
 
 """

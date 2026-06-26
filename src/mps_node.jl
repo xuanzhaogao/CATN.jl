@@ -139,19 +139,15 @@ function swap!(node::MPSNode, i::Int, j::Int)
     M = reshape(W, d0 * d1, d2 * d3)
 
     rows, cols = size(M)
-    U, S, V = if node.swapopt && ((rows > 7000 && cols > 7000) || rows > 20000 || cols > 20000)
-        rsvd(M, node.chi, 10, 10)
+    U, S, V, err = if node.swapopt && ((rows > 7000 && cols > 7000) || rows > 20000 || cols > 20000)
+        U2, S2, V2 = rsvd(M, node.chi, 10, 10)
+        U2, S2, V2, 0.0   # rsvd is approximate; tail weight not tracked
     else
         tsvd(M; cutoff=node.cutoff, maxdim=node.chi)
     end
 
-    # Compute truncation error (sum of discarded singular values beyond chi)
-    # tsvd/rsvd already truncate to chi; compute error from the full SVD is not
-    # available here, so we rely on tsvd having kept only the top chi values.
-    # The error returned is the sum of singular values not kept.
-    # (tsvd returns exactly min(chi, count(s>cutoff)) values)
     myd = length(S)
-    error = 0.0  # singular values beyond kept are not returned by tsvd
+    error = err
 
     if i < j  # going right: center ends at j
         node.mps[i] = reshape(U, d0, d1, myd)

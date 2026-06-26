@@ -76,3 +76,18 @@ end
     delete_neighbor!(node, 6)
     @test node.neighbor == [5,7]
 end
+
+@testset "swap! reports truncation error" begin
+    T = randn(4,4,4)                 # swapping middle bonds can need bond dim up to 16
+    node = MPSNode(T, [1,2,3]; chi=2, cutoff=1e-15)  # chi=2 forces truncation
+    err = swap!(node, 1, 2)
+    @test err > 0
+end
+
+@testset "swap! going left (i>j)" begin
+    T = randn(2,3,4,5)
+    node = MPSNode(T, [10,20,30,40]; chi=1000)
+    swap!(node, 3, 2)                # swap sites 3 and 2, going left
+    @test node.neighbor == [10,30,20,40]
+    @test mps2raw(node) ≈ permutedims(T, (1,3,2,4))
+end
