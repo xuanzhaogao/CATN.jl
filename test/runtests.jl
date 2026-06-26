@@ -4,4 +4,5 @@ using Test
 @testset "CATN.jl" begin
     include("exact.jl")
     include("test_linalg.jl")
+    include("test_mps_node.jl")
 end
