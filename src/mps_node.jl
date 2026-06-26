@@ -524,19 +524,20 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
     node.mps[end-1] = ein"ijk,ka->ija"(node.mps[end-1], mat)
     pop!(node.mps)
 
+    # Set cano to the folded site (now the last site) BEFORE appending nodej's tail,
+    # so cano_to! below performs a real right-sweep across the appended sites.
+    node.cano = length(node.mps)
+
     # append nodej's remaining sites (2:end)
     append!(node.mps, nodej.mps[2:end])
-
-    # update canonical center to new last site
-    node.cano = length(node.mps)
 
     # Update neighbors: remove contracted leg from node (it was moved to end by move2tail!)
     # and append nodej's remaining neighbors (2:end, since idxi was moved to head)
     deleteat!(node.neighbor, length(node.neighbor))
     append!(node.neighbor, nodej.neighbor[2:end])
 
-    # re-canonicalize to tail (cano was just set to last site above, so this is a no-op;
-    # kept for faithfulness to the Python reference)
+    # re-canonicalize to tail: cano points to the folded site (before the appended sites),
+    # so this performs a real right-sweep that left-canonicalizes all appended sites.
     cano_to!(node, length(node.mps))
 
     center = node.mps[node.cano]

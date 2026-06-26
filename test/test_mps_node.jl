@@ -164,3 +164,19 @@ end
     expected = ein"ab,b->a"(Ti, Tj)
     @test vec(raw) ≈ vec(expected) atol=1e-8
 end
+
+@testset "eat! case-c leaves MPS left-canonical" begin
+    Ti = randn(2,3,4)      # node i: legs -> neighbors [1,2,3]
+    Tj = randn(4,5,6)      # node j: legs -> neighbors [3,4,5]
+    nodei = MPSNode(Ti, [1,2,3]; chi=1000, norm_method=1)
+    nodej = MPSNode(Tj, [3,4,5]; chi=1000, norm_method=1)
+    idx  = find_neighbor(nodei, 3)
+    idxi = find_neighbor(nodej, 3)
+    eat!(nodei, nodej, idx, idxi)
+    @test nodei.cano == length(nodei.mps)            # center at last site
+    for k in 1:nodei.cano-1                           # all earlier sites left-isometric
+        A = nodei.mps[k]; dl, d, dr = size(A)
+        M = reshape(A, dl*d, dr)
+        @test M' * M ≈ I atol=1e-8
+    end
+end
