@@ -7,6 +7,7 @@ using Random
 include("linalg_utils.jl")
 include("mps_node.jl")
 include("tensor_network.jl")
+include("ising.jl")
 
 export tsvd, rsvd
 export MPSNode, raw2mps, mps2raw, order, shape
@@ -24,5 +25,6 @@ export select_edge_init!
 export select_edge_min_dim, select_edge_min_dim_triangle, select_edge_sequentially
 export cut_bondim!, cut_bondim_opt!
 export contraction!
+export ising_network, free_energy
 
 end # module

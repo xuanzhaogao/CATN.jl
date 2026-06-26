@@ -6,4 +6,5 @@ using Test
     include("test_linalg.jl")
     include("test_mps_node.jl")
     include("test_contraction.jl")
+    include("test_ising.jl")
 end

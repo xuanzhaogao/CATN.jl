@@ -17,6 +17,8 @@ mutable struct TensorNetwork{T}
     maxdim_intermediate::Int
     num_isolated::Int
     rng::AbstractRNG
+    n::Int
+    beta::Float64
 end
 
 """
@@ -130,7 +132,9 @@ function TensorNetwork(
         one(T),                            # psi
         -1,                                # maxdim_intermediate
         num_isolated,
-        MersenneTwister(seed)
+        MersenneTwister(seed),
+        n,                                 # n: number of tensors (default)
+        1.0                                # beta: default inverse temperature
     )
 end
 
