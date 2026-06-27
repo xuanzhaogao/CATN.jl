@@ -11,6 +11,8 @@ using Test
     @test tn2 isa TensorNetwork{Float64, Array{Float64,3}}
     @test mps2raw(tn2.tensors[1]) ≈ mps2raw(tn.tensors[1])
     @test tn2.n == tn.n && tn2.beta == tn.beta && tn2.Dmax == tn.Dmax
+    @test tn2.tensors !== tn.tensors                  # adapt_structure rebuilt the Dict
+    @test tn2.rng !== tn.rng                           # rng was deepcopied, not shared
 
     # adapting a node preserves the represented tensor
     node = MPSNode(randn(2,3,4), [1,2,3]; chi=1000)
