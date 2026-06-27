@@ -27,6 +27,17 @@ function tsvd(A::AbstractMatrix; cutoff::Real=1e-15, maxdim::Int=typemax(Int))
     return F.U[:, 1:nkeep], S[1:nkeep], F.V[:, 1:nkeep], discarded
 end
 
+# Dense materialization of a QR Q-factor matching `ref`'s array type (CPU Array or CuArray).
+# Equivalent to `Matrix(Q)` on CPU but device-agnostic: Q * I, with the identity built
+# via `similar` + `diagind` broadcast (no GPU-illegal scalar indexing).
+function _dense_q(Q, ref::AbstractArray, ::Type{T}) where {T}
+    m = size(Q, 1)
+    E = similar(ref, T, (m, m))
+    fill!(E, zero(T))
+    @views E[diagind(E)] .= one(T)
+    return Q * E
+end
+
 """
     rsvd(A, k, oversample=10, power=10; rng) -> (U, S, V)
 
@@ -38,9 +49,9 @@ function rsvd(A::AbstractMatrix{T}, k::Int, oversample::Int=10, power::Int=10;
     p = min(n, oversample * k)
     Y = A * randn!(rng, similar(A, T, (n, p)))
     for _ in 1:power
-        Y = Matrix(qr(A * (A' * Y)).Q)
+        Y = _dense_q(qr(A * (A' * Y)).Q, A, T)
     end
-    Q = Matrix(qr(Y).Q)
+    Q = _dense_q(qr(Y).Q, A, T)
     B = Q' * A
     F = svd(B)
     kk = min(k, size(F.U, 2))
