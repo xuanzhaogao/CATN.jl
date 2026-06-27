@@ -36,7 +36,7 @@ function rsvd(A::AbstractMatrix{T}, k::Int, oversample::Int=10, power::Int=10;
              rng::AbstractRNG=Random.default_rng()) where {T}
     n = size(A, 2)
     p = min(n, oversample * k)
-    Y = A * randn(rng, T, n, p)
+    Y = A * randn!(rng, similar(A, T, (n, p)))
     for _ in 1:power
         Y = Matrix(qr(A * (A' * Y)).Q)
     end

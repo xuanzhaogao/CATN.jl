@@ -22,4 +22,14 @@ using LinearAlgebra, Random, Test
     L = randn(50, 4) * randn(4, 40)      # rank 4
     Ur, Sr, Vr = rsvd(L, 4, 10, 10; rng=MersenneTwister(0))
     @test Ur * Diagonal(Sr) * Vr' ≈ L atol=1e-8
+
+    @testset "rsvd uses device-following random sketch" begin
+        Random.seed!(2)
+        L = randn(40, 3) * randn(3, 30)          # rank 3
+        U, S, V = rsvd(L, 3, 10, 10; rng=MersenneTwister(7))
+        @test U * Diagonal(S) * V' ≈ L atol=1e-8
+        # CPU determinism preserved across calls with the same seed
+        U2, S2, V2 = rsvd(L, 3, 10, 10; rng=MersenneTwister(7))
+        @test S ≈ S2
+    end
 end
