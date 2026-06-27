@@ -94,3 +94,10 @@ end
     got = catn_value(ts, ixs; Dmax=4, chi=64, select=1, compress=true)
     @test got ≈ ref rtol=1e-6
 end
+
+@testset "TensorNetwork is array-type parameterized" begin
+    A = randn(2,3); B = randn(3,4); C = randn(4,2)
+    tn = TensorNetwork([A,B,C], [[:a,:b],[:b,:c],[:c,:a]]; chi=1000)
+    @test tn isa TensorNetwork{Float64, Array{Float64,3}}
+    @test valtype(tn.tensors) == MPSNode{Float64, Array{Float64,3}}
+end

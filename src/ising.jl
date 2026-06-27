@@ -202,7 +202,7 @@ function ising_network(
     # Count isolated nodes (no real bonds)
     num_isolated = count(k -> isempty(nodes[k].neighbor), 1:n)
 
-    TensorNetwork{Float64}(
+    TensorNetwork{Float64, Array{Float64,3}}(
         nodes,
         Dmax,
         chi,

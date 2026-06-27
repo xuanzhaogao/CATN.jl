@@ -1,5 +1,5 @@
-mutable struct TensorNetwork{T}
-    tensors::Dict{Int,MPSNode{T}}
+mutable struct TensorNetwork{T,AT<:AbstractArray{T,3}}
+    tensors::Dict{Int,MPSNode{T,AT}}
     Dmax::Int
     chi::Int
     cutoff::Float64
@@ -102,7 +102,8 @@ function TensorNetwork(
     end
 
     # Build MPSNode for each tensor
-    nodes = Dict{Int,MPSNode{T}}()
+    AT = typeof(similar(tensors[1], T, (1, 1, 1)))
+    nodes = Dict{Int,MPSNode{T,AT}}()
     for t in 1:n
         nodes[t] = MPSNode(tensors[t], neighbor_vecs[t];
                            chi=chi, cutoff=cutoff,
@@ -114,7 +115,7 @@ function TensorNetwork(
     # A node is isolated if all its neighbor ids are negative (sentinels) or it has 0 legs
     num_isolated = count(t -> all(nb -> nb < 0, neighbor_vecs[t]), 1:n)
 
-    TensorNetwork{T}(
+    TensorNetwork{T,AT}(
         nodes,
         Dmax,
         chi,
