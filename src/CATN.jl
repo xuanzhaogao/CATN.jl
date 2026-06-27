@@ -3,11 +3,13 @@ module CATN
 using OMEinsum
 using LinearAlgebra
 using Random
+using Adapt
 
 include("linalg_utils.jl")
 include("mps_node.jl")
 include("tensor_network.jl")
 include("ising.jl")
+include("adapt.jl")
 
 export tsvd, rsvd
 export MPSNode, raw2mps, mps2raw, order, shape
