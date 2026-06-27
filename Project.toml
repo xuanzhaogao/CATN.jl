@@ -11,11 +11,15 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
 Adapt = "4"
+CUDA = "5, 6"
 OMEinsum = "0.9.4"
+cuTENSOR = "2"
 julia = "1.10.10"
 
 [extras]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+cuTENSOR = "011b41b2-24ef-40a8-b3eb-fa098493e9e1"
 
 [targets]
-test = ["Test"]
+test = ["Test", "CUDA", "cuTENSOR"]

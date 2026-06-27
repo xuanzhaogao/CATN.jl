@@ -166,7 +166,7 @@ function swap!(node::MPSNode, i::Int, j::Int)
         node.mps[j] = reshape(Diagonal(S) * V', myd, d2, d3)
     else  # going left: fold S into lower-index site (j < i); center ends at j
         node.mps[j] = reshape(U * Diagonal(S), d0, d1, myd)
-        node.mps[i] = reshape(V', myd, d2, d3)
+        node.mps[i] = reshape(copy(V'), myd, d2, d3)
     end
 
     node.cano = j
@@ -319,7 +319,9 @@ Calling this on a non-scalar MPS raises an error as in the reference.
 function lognorm(node::MPSNode)
     isempty(node.mps) && return (0.0, 1)
     if length(node.mps) == 1 && size(node.mps[1], 2) == 1
-        z = node.mps[1][1, 1, 1]
+        # sum() performs a GPU-safe reduction that returns a plain Julia scalar,
+        # avoiding scalar indexing (node.mps[1][1,1,1] would fail on CuArray).
+        z = sum(node.mps[1])
         return (log(abs(z)), sign(z))
     end
     error("lognorm: computing norm of a non-scalar MPS is not supported in contraction")
@@ -367,7 +369,7 @@ function compress!(node::MPSNode)
         error += err
         myd = length(S)
         mps[i] = reshape(U * Diagonal(S), d0, d1, myd)
-        mps[j] = reshape(V', myd, d2, d3)
+        mps[j] = reshape(copy(V'), myd, d2, d3)
     end
     node.cano = 1
     return error
@@ -409,11 +411,12 @@ function compress_opt!(node::MPSNode)
         flag_right = false
         local Ql, Qr
 
+        ET = eltype(matl)
         if size(matl, 1) > size(matl, 2)
             flag_left = true
             Fl = qr(matl)
-            Ql = Matrix(Fl.Q)
-            Rl = Matrix(Fl.R)
+            Ql = _thin_q(Fl.Q, matl, ET, size(matl, 2))
+            Rl = copy(Fl.R)
         else
             Rl = matl
         end
@@ -421,8 +424,8 @@ function compress_opt!(node::MPSNode)
         if size(matr, 1) < size(matr, 2)
             flag_right = true
             Fr = qr(matr')
-            Qr = Matrix(Fr.Q)
-            Rr = Matrix(Fr.R)
+            Qr = _thin_q(Fr.Q, matr', ET, size(matr', 2))
+            Rr = copy(Fr.R)
         else
             Rr = matr'
         end
@@ -437,7 +440,7 @@ function compress_opt!(node::MPSNode)
         flag_right && (V = Qr * V)
 
         mps[i] = reshape(U, d0, d1, myd)
-        mps[j] = reshape(V', myd, d2, d3)
+        mps[j] = reshape(copy(V'), myd, d2, d3)
     end
     node.cano = 1
     return error

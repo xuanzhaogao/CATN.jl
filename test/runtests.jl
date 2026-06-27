@@ -8,4 +8,5 @@ using Test
     include("test_contraction.jl")
     include("test_ising.jl")
     include("test_adapt.jl")
+    include("test_gpu.jl")
 end

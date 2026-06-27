@@ -421,12 +421,13 @@ function cut_bondim_opt!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
     matj = reshape(permutedims(Aj, (1, 3, 2)), db_l * db_r, d)   # (db_l*db_r, d)
 
     # QR pre-reduction to reduce SVD cost (mirrors tn_np.py:632-644)
+    ET = eltype(mati)
     flag_left = false
     qi = nothing
     if size(mati, 1) > size(mati, 2)
         F = qr(mati)
-        qi = Matrix(F.Q)
-        ri = Matrix(F.R)
+        qi = _thin_q(F.Q, mati, ET, size(mati, 2))
+        ri = copy(F.R)
         flag_left = true
     else
         ri = mati
@@ -436,8 +437,8 @@ function cut_bondim_opt!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
     qj = nothing
     if size(matj, 1) > size(matj, 2)
         F = qr(matj)
-        qj = Matrix(F.Q)
-        rj = Matrix(F.R)
+        qj = _thin_q(F.Q, matj, ET, size(matj, 2))
+        rj = copy(F.R)
         flag_right = true
     else
         rj = matj

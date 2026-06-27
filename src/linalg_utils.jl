@@ -30,9 +30,19 @@ end
 # Dense materialization of a QR Q-factor matching `ref`'s array type (CPU Array or CuArray).
 # Equivalent to `Matrix(Q)` on CPU but device-agnostic: Q * I, with the identity built
 # via `similar` + `diagind` broadcast (no GPU-illegal scalar indexing).
+# Returns the FULL Q of shape (m, m).
 function _dense_q(Q, ref::AbstractArray, ::Type{T}) where {T}
     m = size(Q, 1)
     E = similar(ref, T, (m, m))
+    fill!(E, zero(T))
+    @views E[diagind(E)] .= one(T)
+    return Q * E
+end
+
+# Thin Q materialization: returns Q of shape (m, n) where n = number of columns in R.
+# Device-agnostic replacement for Matrix(F.Q) when only the thin Q is needed.
+function _thin_q(Q, ref::AbstractArray, ::Type{T}, n::Int) where {T}
+    E = similar(ref, T, (n, n))
     fill!(E, zero(T))
     @views E[diagind(E)] .= one(T)
     return Q * E
