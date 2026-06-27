@@ -1,5 +1,5 @@
-mutable struct MPSNode{T}
-    mps::Vector{Array{T,3}}
+mutable struct MPSNode{T,AT<:AbstractArray{T,3}}
+    mps::Vector{AT}
     neighbor::Vector{Int}
     cano::Int
     chi::Int
@@ -7,6 +7,17 @@ mutable struct MPSNode{T}
     norm_method::Int
     svdopt::Bool
     swapopt::Bool
+    # Suppress the auto-generated outer constructor to avoid method-overwrite warning
+    # at precompilation when we define the outer positional constructor below.
+    MPSNode{T,AT}(mps, neighbor, cano, chi, cutoff, norm_method, svdopt, swapopt) where {T, AT<:AbstractArray{T,3}} =
+        new{T,AT}(mps, neighbor, cano, chi, cutoff, norm_method, svdopt, swapopt)
+end
+
+# Positional constructor: infer the array-type parameter AT from the mps vector.
+function MPSNode(mps::Vector{<:AbstractArray{T,3}}, neighbor::Vector{Int}, cano::Int,
+                 chi::Int, cutoff::Float64, norm_method::Int, svdopt::Bool,
+                 swapopt::Bool) where {T}
+    MPSNode{T,eltype(mps)}(mps, neighbor, cano, chi, cutoff, norm_method, svdopt, swapopt)
 end
 
 function MPSNode(tensor::AbstractArray{T}, neighbor::Vector{Int};
@@ -14,16 +25,17 @@ function MPSNode(tensor::AbstractArray{T}, neighbor::Vector{Int};
                 svdopt::Bool=true, swapopt::Bool=true) where {T}
     mps = raw2mps(tensor, chi, cutoff)
     cano = length(mps)          # left-canonical: center at last site
-    MPSNode{T}(mps, copy(neighbor), cano, chi, cutoff, norm_method, svdopt, swapopt)
+    MPSNode(mps, copy(neighbor), cano, chi, cutoff, norm_method, svdopt, swapopt)
 end
 
 function raw2mps(tensor::AbstractArray{T}, chi::Int, cutoff::Float64) where {T}
     nd = ndims(tensor)
-    nd == 0 && return Array{T,3}[]
+    AT = typeof(similar(tensor, T, (1, 1, 1)))   # concrete 3-D array type on tensor's device
+    nd == 0 && return AT[]
     dims = size(tensor)
-    nd == 1 && return Array{T,3}[reshape(Array(tensor), 1, dims[1], 1)]
-    mps = Array{T,3}[]
-    R = reshape(Array(tensor), 1, dims...)      # (1, dims...)
+    nd == 1 && return AT[reshape(tensor, 1, dims[1], 1)]
+    mps = AT[]
+    R = reshape(tensor, 1, dims...)              # preserves device (no Array() copy)
     dleft = 1
     for i in 1:nd-1
         M = reshape(R, dleft * dims[i], :)
@@ -460,13 +472,13 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
         r  = dot(vi, vj)
         absr = abs(r)
         if absr <= node.cutoff
-            node.mps = Array{T,3}[]
+            empty!(node.mps)
             # remove contracted leg from node.neighbor
             deleteat!(node.neighbor, idx)
             return (0.0, 0.0, one(T))
         end
         lognorm_val = log(absr)
-        node.mps = Array{T,3}[]
+        empty!(node.mps)
         # Remove contracted neighbors from both
         deleteat!(node.neighbor, idx)
         # nodej's remaining neighbors (after removing idxi) — none for single site

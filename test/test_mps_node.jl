@@ -180,3 +180,13 @@ end
         @test M' * M ≈ I atol=1e-8
     end
 end
+
+@testset "MPSNode is array-type parameterized" begin
+    T = randn(2, 3, 4)
+    node = MPSNode(T, [1, 2, 3]; chi=1000)
+    @test node isa MPSNode{Float64, Array{Float64, 3}}
+    @test eltype(node.mps) == Array{Float64, 3}
+    @test mps2raw(node) ≈ T                      # real reconstruction check
+    n2 = MPSNode(node.mps, [1, 2, 3], node.cano, 1000, 1e-15, 1, true, true)
+    @test n2 isa MPSNode{Float64, Array{Float64, 3}}
+end

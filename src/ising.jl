@@ -48,9 +48,9 @@ function ising_network(
 
     # Initialize empty MPSNode for each spin (no mps sites yet, empty neighbor list)
     # We build mps directly, so we create nodes with empty mps and populate them
-    nodes = Dict{Int, MPSNode{Float64}}()
+    nodes = Dict{Int, MPSNode{Float64, Array{Float64,3}}}()
     for k in 1:n
-        node = MPSNode{Float64}(
+        node = MPSNode(
             Array{Float64,3}[],  # mps: empty, will be populated
             Int[],               # neighbor: empty, will be populated
             0,                   # cano
