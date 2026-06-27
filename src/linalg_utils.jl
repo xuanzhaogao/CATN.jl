@@ -27,18 +27,6 @@ function tsvd(A::AbstractMatrix; cutoff::Real=1e-15, maxdim::Int=typemax(Int))
     return F.U[:, 1:nkeep], S[1:nkeep], F.V[:, 1:nkeep], discarded
 end
 
-# Dense materialization of a QR Q-factor matching `ref`'s array type (CPU Array or CuArray).
-# Equivalent to `Matrix(Q)` on CPU but device-agnostic: Q * I, with the identity built
-# via `similar` + `diagind` broadcast (no GPU-illegal scalar indexing).
-# Returns the FULL Q of shape (m, m).
-function _dense_q(Q, ref::AbstractArray, ::Type{T}) where {T}
-    m = size(Q, 1)
-    E = similar(ref, T, (m, m))
-    fill!(E, zero(T))
-    @views E[diagind(E)] .= one(T)
-    return Q * E
-end
-
 # Thin Q materialization: returns Q of shape (m, n) where n = number of columns in R.
 # Device-agnostic replacement for Matrix(F.Q) when only the thin Q is needed.
 function _thin_q(Q, ref::AbstractArray, ::Type{T}, n::Int) where {T}
@@ -59,9 +47,10 @@ function rsvd(A::AbstractMatrix{T}, k::Int, oversample::Int=10, power::Int=10;
     p = min(n, oversample * k)
     Y = A * randn!(rng, similar(A, T, (n, p)))
     for _ in 1:power
-        Y = _dense_q(qr(A * (A' * Y)).Q, A, T)
+        M = A * (A' * Y)
+        Y = _thin_q(qr(M).Q, A, T, size(M, 2))
     end
-    Q = _dense_q(qr(Y).Q, A, T)
+    Q = _thin_q(qr(Y).Q, A, T, size(Y, 2))
     B = Q' * A
     F = svd(B)
     kk = min(k, size(F.U, 2))

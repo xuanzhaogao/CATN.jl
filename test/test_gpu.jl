@@ -22,7 +22,7 @@ else
         @testset "tsvd/rsvd on CuArray" begin
             Acpu = randn(8,5); A = CuArray(Acpu)
             U, S, V = tsvd(A)
-            @test Array(U * Diagonal(S) * V') ≈ Acpu atol=1e-6
+            @test Array(U * Diagonal(S) * V') ≈ Acpu atol=1e-8
             Lcpu = randn(40,3) * randn(3,30); L = CuArray(Lcpu)
             Ur, Sr, Vr = rsvd(L, 3, 10, 10; rng=Random.default_rng())
             @test Array(Ur * Diagonal(Sr) * Vr') ≈ Lcpu atol=1e-5
