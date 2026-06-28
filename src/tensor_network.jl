@@ -360,7 +360,7 @@ function cut_bondim!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
     matj = reshape(permutedims(Aj, (1, 3, 2)), db_l * db_r, d)   # (db_l*db_r, d)
 
     # Merge and SVD
-    merged = mati * matj'   # (da_l*da_r, db_l*db_r)
+    merged = mati * transpose(matj)   # (da_l*da_r, db_l*db_r)
     U, S, V, discarded_base = tsvd(merged; cutoff=tn.cutoff)
 
     # Apply Dmax truncation on top of cutoff truncation
@@ -375,8 +375,8 @@ function cut_bondim!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
     V = V[:, 1:myd]
 
     sqS = sqrt.(S)
-    mati = U * Diagonal(sqS)   # (da_l*da_r, myd)
-    matj = V * Diagonal(sqS)   # (db_l*db_r, myd)
+    mati = U * Diagonal(sqS)         # (da_l*da_r, myd)
+    matj = conj(V) * Diagonal(sqS)   # (db_l*db_r, myd)
 
     # Reshape back: (rows, myd) → (left_bond, right_bond, myd) → permute → (left_bond, myd, right_bond)
     node_i.mps[idx_j_in_i] = permutedims(reshape(mati, da_l, da_r, myd), (1, 3, 2))
@@ -445,7 +445,7 @@ function cut_bondim_opt!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
     end
 
     # Merge and SVD
-    merged = ri * rj'
+    merged = ri * transpose(rj)
     U, S, V, discarded_base = tsvd(merged; cutoff=tn.cutoff)
 
     # Apply Dmax truncation on top of cutoff truncation
@@ -460,8 +460,8 @@ function cut_bondim_opt!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
     V = V[:, 1:myd]
 
     sqS = sqrt.(S)
-    mati = U * Diagonal(sqS)   # (size_ri_rows, myd) or (da_l*da_r, myd)
-    matj = V * Diagonal(sqS)   # (size_rj_rows, myd)
+    mati = U * Diagonal(sqS)         # (size_ri_rows, myd) or (da_l*da_r, myd)
+    matj = conj(V) * Diagonal(sqS)   # (size_rj_rows, myd)
 
     # Re-apply Q factors if QR was used
     flag_left  && (mati = qi * mati)
