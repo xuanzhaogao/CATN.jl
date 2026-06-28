@@ -472,7 +472,7 @@ function eat!(node::MPSNode{T}, nodej::MPSNode{T}, idx::Int, idxi::Int) where {T
         # mps[1] has shape (1, d, 1); contract along the physical leg
         vi = vec(node.mps[1])    # length d
         vj = vec(nodej.mps[1])   # length d
-        r  = dot(vi, vj)
+        r  = sum(vi .* vj)   # non-conjugating bond contraction (dot would conjugate vi)
         absr = abs(r)
         if absr <= node.cutoff
             empty!(node.mps)

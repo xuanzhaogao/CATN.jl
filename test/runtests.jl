@@ -9,4 +9,5 @@ using Test
     include("test_ising.jl")
     include("test_adapt.jl")
     include("test_gpu.jl")
+    include("test_complex.jl")
 end
