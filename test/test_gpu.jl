@@ -71,5 +71,14 @@ else
             lnZ, err, psi = contraction!(gtn)
             @test exp(lnZ) * psi ≈ ref rtol=1e-3
         end
+
+        @testset "complex GPU contraction matches CPU + oracle" begin
+            ts = [randn(ComplexF64,3,4), randn(ComplexF64,4,5), randn(ComplexF64,5,3)]
+            ixs = [[:a,:b],[:b,:c],[:c,:a]]
+            ref = exact_contract(ts, ixs)[]
+            gtn = TensorNetwork([CuArray(t) for t in ts], ixs; Dmax=-1, chi=10_000)
+            lnZ, err, psi = contraction!(gtn)
+            @test exp(lnZ) * psi ≈ ref rtol=1e-7
+        end
     end
 end
