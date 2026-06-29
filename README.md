@@ -38,5 +38,6 @@ test-only dependency of CATN — the core has no CUDA dependency.
 
 ## Limitations
 
-Complex-valued tensors are supported (contractions are non-conjugating tensor contractions);
-the result `exp(lnZ) * psi` carries the complex phase in `psi`.
+Complex-valued tensors are supported in the generic `TensorNetwork` path (contractions are
+non-conjugating tensor contractions; the result `exp(lnZ) * psi` carries the complex phase
+in `psi`). The `ising_network` convenience builder is real-valued (physical couplings are real).

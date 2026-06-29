@@ -332,9 +332,9 @@ Index math (mirrors `tn_np.py:482`):
   `Aj = mps_j[idx_i_in_j]` shape `(db_l, d, db_r)`
 - Form `mati = reshape(permutedims(Ai,(1,3,2)), da_l*da_r, d)`,
         `matj = reshape(permutedims(Aj,(1,3,2)), db_l*db_r, d)`
-- `merged = mati * matj'`, `tsvd` → keep `min(nnz, Dmax)` singular values
+- `merged = mati * transpose(matj)`, `tsvd` → keep `min(nnz, Dmax)` singular values
 - Split `mati = U * Diagonal(sqrt.(S))`,
-        `matj = V * Diagonal(sqrt.(S))` (so `mati * matj' = U S V'`)
+        `matj = conj(V) * Diagonal(sqrt.(S))` (so `mati * transpose(matj) = U S V'`)
 - Reshape back and store.
 """
 function cut_bondim!(tn::TensorNetwork, i::Int, idx_j_in_i::Int)
