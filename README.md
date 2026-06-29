@@ -98,9 +98,14 @@ For the generic path, build the network directly from `CuArray`s:
 gtn = TensorNetwork([CuArray(A), CuArray(B), CuArray(C)], ixs; Dmax=64, chi=256)
 ```
 
-`Float32` networks (`randn(Float32, …)`) are recommended on GPU for speed. **CUDA is a
-test-only dependency** — the core package has no CUDA dependency, so CPU-only users install
-nothing extra.
+`Float32` networks (`randn(Float32, …)`) are recommended on GPU for speed. **CATN has no CUDA
+dependency** — GPU support is provided through OMEinsum's CUDA extension when you load `CUDA`
+yourself, so CPU-only users install nothing extra. The GPU test suite lives in a separate
+environment (`test/gpu`) and is run on a CUDA-capable machine with:
+
+```
+julia test/gpu/run_gpu_tests.jl
+```
 
 ## Complex numbers
 
