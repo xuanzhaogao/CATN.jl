@@ -13,6 +13,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(PackageSpec(path = normpath(joinpath(@__DIR__, "..", ".."))))
 Pkg.instantiate()
+Pkg.precompile()   # finish extension precompilation before loading (avoids first-load races)
 
 using Test
 # `exact_contract` oracle, then the GPU testset (which has its own CUDA.functional() guard).
