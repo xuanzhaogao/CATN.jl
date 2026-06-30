@@ -904,3 +904,178 @@ function compress_opt!(node::BraKetNode)
     node.cano = 1
     return error
 end
+
+# ---------------------------------------------------------------------------
+# BraKet lognorm helper (mirrors TensorNetwork.network_lognorm)
+# ---------------------------------------------------------------------------
+
+"""
+    braket_lognorm(bk) -> (lognorm::Float64, sign)
+
+Sum of per-node norms for all nodes in `bk.tensors` that still have MPS sites.
+A fully-contracted network leaves a single node whose MPS encodes the scalar.
+"""
+function braket_lognorm(bk::BraKetNetwork{T}) where {T}
+    lognorm_total = zero(real(T))
+    sign_total    = one(T)
+    for (_, node) in bk.tensors
+        isempty(node.mps) && continue
+        # Canonicalize to the last site to extract the norm
+        cano_to!(node, length(node.mps))
+        center = node.mps[node.cano]
+        if node.norm_method == 1
+            nm = real(T)(LinearAlgebra.norm(vec(center)))
+        elseif node.norm_method == 2
+            nm = real(T)(maximum(abs, center))
+        else
+            nm = one(real(T))
+        end
+        nm <= node.cutoff && continue
+        lognorm_total += log(nm)
+        # sign is just 1 for real norms; for complex we accumulate the phase
+        sign_total *= nm > 0 ? one(T) : -one(T)
+    end
+    return (lognorm_total, sign_total)
+end
+
+# ---------------------------------------------------------------------------
+# BraKet contraction! — full loop for acyclic network
+# ---------------------------------------------------------------------------
+
+"""
+    contraction!(bk::BraKetNetwork{T}) -> (lnZ, error, psi)
+
+Contract the entire `BraKetNetwork` by repeatedly consuming one original virtual
+bond at a time (via `eat!`) and compressing after each step.
+
+**Edge selection (v1):** sequentially (in insertion order of `bk.edges`), with
+`order(i) ≥ order(j)` enforced by swapping `i` and `j` if needed.
+
+**Post-eat bookkeeping:** after `eat!(node_i, node_j, ...)`,
+- the eaten `PairedEdge` is removed from `bk.edges`;
+- any `PairedEdge` that still refers to `j` is re-pointed to `i`, and its
+  MPS-leg indices are re-looked-up via `find_leg` (positions may have changed
+  because `eat!` moves legs around via `swap!`);
+- `node_j` is removed from `bk.tensors`.
+
+Returns `(lnZ, error, psi)` where `⟨ψ|ψ⟩ = exp(lnZ) * psi`.
+"""
+function contraction!(bk::BraKetNetwork{T}) where {T}
+    error_acc = 0.0
+    bk.psi    = one(T)
+    bk.lnZ   = zero(T)
+
+    # We iterate over a snapshot of the edge list; the live list shrinks as we eat.
+    # We process edges in order; the live bk.edges may have changed node IDs so
+    # we always work from the current bk.edges.
+    while !isempty(bk.edges)
+        # Pick the first remaining edge (sequential selection for v1; acyclic ⇒ correctness)
+        pe = bk.edges[1]
+        i, j = pe.i, pe.j
+
+        node_i = bk.tensors[i]
+        node_j = bk.tensors[j]
+
+        # Ensure order(i) >= order(j)
+        if order(node_j) > order(node_i)
+            i, j = j, i
+            node_i, node_j = node_j, node_i
+        end
+
+        # Re-find the current leg positions (they may differ from pe's stored values
+        # if a previous eat! moved them around within node_i or node_j).
+        # j_id is how node_i refers to node_j (i.e. j); i_id is how node_j refers to i.
+        j_id = j   # the neighbor ID of node_j as seen by node_i
+        i_id = i   # the neighbor ID of node_i as seen by node_j
+
+        # eat! j into i
+        lognorm_val, eat_err, phase = eat!(node_i, node_j, j_id, i_id)
+        error_acc   += eat_err
+        bk.psi      *= phase
+        bk.lnZ      += lognorm_val
+
+        # compress! the merged node (environment-aware truncation of combined internal bonds)
+        if bk.svdopt
+            error_acc += compress_opt!(node_i)
+        else
+            error_acc += compress!(node_i)
+        end
+
+        # Track maxdim_intermediate
+        for t in node_i.mps
+            d = size(t, 2)
+            if d > bk.maxdim_intermediate
+                bk.maxdim_intermediate = d
+            end
+        end
+
+        # --- Post-eat bookkeeping ---
+        # 1. Remove the eaten edge from bk.edges (it is always the first element,
+        #    but to be safe we remove the specific PairedEdge we just consumed).
+        #    We search by node IDs (the current i and j, which may have been swapped).
+        eaten_i = i;  eaten_j = j
+        filter!(e -> !((e.i == eaten_i && e.j == eaten_j) ||
+                        (e.i == eaten_j && e.j == eaten_i)), bk.edges)
+
+        # 2. Re-point every PairedEdge that still refers to j → i.
+        #    Re-find the MPS leg positions via find_leg (positions changed after eat!).
+        for k in eachindex(bk.edges)
+            e = bk.edges[k]
+            if e.i == j
+                # This edge was (j, other); now it is (i, other) since j was absorbed into i.
+                other  = e.j
+                # Re-find legs in merged node_i
+                kl_i   = find_leg(node_i, other, true)   # ket leg to `other` in node_i
+                bl_i   = find_leg(node_i, other, false)  # bra leg to `other` in node_i
+                other_node = bk.tensors[other]
+                kl_o   = find_leg(other_node, i, true)   # ket leg to i in other (node_j's old neighbors now point to i)
+                bl_o   = find_leg(other_node, i, false)
+                # If other_node still has legs pointing to j (not yet repointed), look for j too
+                if kl_o == 0
+                    kl_o = find_leg(other_node, j, true)
+                    bl_o = find_leg(other_node, j, false)
+                    # Update other_node's neighbor entries: replace j with i
+                    for m in eachindex(other_node.neighbor)
+                        other_node.neighbor[m] == j && (other_node.neighbor[m] = i)
+                    end
+                    # Re-find after update
+                    kl_o = find_leg(other_node, i, true)
+                    bl_o = find_leg(other_node, i, false)
+                end
+                bk.edges[k] = PairedEdge(i, other, kl_i, bl_i, kl_o, bl_o)
+
+            elseif e.j == j
+                # This edge was (other, j); now it is (other, i).
+                other  = e.i
+                # Re-find legs
+                other_node = bk.tensors[other]
+                kl_o   = find_leg(other_node, i, true)
+                bl_o   = find_leg(other_node, i, false)
+                if kl_o == 0
+                    kl_o = find_leg(other_node, j, true)
+                    bl_o = find_leg(other_node, j, false)
+                    for m in eachindex(other_node.neighbor)
+                        other_node.neighbor[m] == j && (other_node.neighbor[m] = i)
+                    end
+                    kl_o = find_leg(other_node, i, true)
+                    bl_o = find_leg(other_node, i, false)
+                end
+                kl_i   = find_leg(node_i, other, true)
+                bl_i   = find_leg(node_i, other, false)
+                bk.edges[k] = PairedEdge(other, i, kl_o, bl_o, kl_i, bl_i)
+            end
+        end
+
+        # 3. Remove j from bk.tensors
+        delete!(bk.tensors, j)
+    end
+
+    # --- After loop: fold remaining per-node norms ---
+    # For a fully-contracted acyclic network there is exactly one node left.
+    # Its MPS encodes the (normalized) scalar; its norm is the remaining contribution.
+    ln, sg = braket_lognorm(bk)
+    bk.lnZ += ln
+    bk.psi  *= sg
+
+    return (bk.lnZ, error_acc, bk.psi)
+end

@@ -1,7 +1,7 @@
 using CATN
 using CATN: BraKetNode, braket_node, mps2raw, cano_to!, left_canonical!, find_leg
 using CATN: BraKetNetwork, braket_network
-using CATN: eat!, compress!
+using CATN: eat!, compress!, contraction!
 using OMEinsum, LinearAlgebra, Random, Test
 
 # Exact ⟨ψ|ψ⟩ via a direct double-layer contraction (independent oracle).
@@ -231,4 +231,71 @@ end
     @test err2 == 0.0 || err2 < 1e-12
     raw2 = mps2raw(node2)
     @test raw2 ≈ E_ref rtol=1e-8
+end
+
+# ---------------------------------------------------------------------------
+# Helper for norm computation via contraction!
+# ---------------------------------------------------------------------------
+
+function braket_value(tensors, ixs; kwargs...)
+    bk = braket_network(tensors, ixs; kwargs...)
+    lnZ, err, psi = contraction!(bk)
+    return exp(lnZ) * psi
+end
+
+@testset "norm matches exact (exact mode)" begin
+    Random.seed!(123)
+
+    # --- case 1: 4-site complex chain ---
+    T1c = randn(ComplexF64, 2, 3)
+    T2c = randn(ComplexF64, 3, 2, 3)
+    T3c = randn(ComplexF64, 3, 2, 3)
+    T4c = randn(ComplexF64, 3, 2)
+    ts4  = [T1c, T2c, T3c, T4c]
+    ixs4 = [[:p1,:a], [:a,:p2,:b], [:b,:p3,:c], [:c,:p4]]
+    ref4 = exact_norm(ts4, ixs4)
+    val4 = braket_value(ts4, ixs4; chi=10_000)
+    @test val4 ≈ ref4 rtol=1e-10
+    @test real(ref4) ≥ 0
+
+    # --- case 2: real 3-site chain ---
+    T1r = randn(Float64, 2, 2)
+    T2r = randn(Float64, 2, 2, 2)
+    T3r = randn(Float64, 2, 2)
+    ts3r  = [T1r, T2r, T3r]
+    ixs3r = [[:p1,:a], [:a,:p2,:b], [:b,:p3]]
+    ref3r = exact_norm(ts3r, ixs3r)
+    val3r = braket_value(ts3r, ixs3r; chi=10_000)
+    @test val3r ≈ ref3r rtol=1e-10
+    @test real(ref3r) ≥ 0
+
+    # --- case 3: 5-site complex chain (D=3) ---
+    T1_5 = randn(ComplexF64, 2, 3)
+    T2_5 = randn(ComplexF64, 3, 2, 3)
+    T3_5 = randn(ComplexF64, 3, 2, 3)
+    T4_5 = randn(ComplexF64, 3, 2, 3)
+    T5_5 = randn(ComplexF64, 3, 2)
+    ts5  = [T1_5, T2_5, T3_5, T4_5, T5_5]
+    ixs5 = [[:p1,:a], [:a,:p2,:b], [:b,:p3,:c], [:c,:p4,:d], [:d,:p5]]
+    ref5 = exact_norm(ts5, ixs5)
+    val5 = braket_value(ts5, ixs5; chi=10_000)
+    @test val5 ≈ ref5 rtol=1e-10
+    @test real(ref5) ≥ 0
+
+    # --- case 4: acyclic tree (star topology, 4 nodes: 1 center, 3 leaves) ---
+    # center: T_c(a, b, c, p_c) - 3 virtual bonds + 1 physical
+    # leaf 1: T_l1(a, p1)
+    # leaf 2: T_l2(b, p2)
+    # leaf 3: T_l3(c, p3)
+    # Bond graph: center-leaf1 (bond a), center-leaf2 (bond b), center-leaf3 (bond c) → tree
+    Tc  = randn(ComplexF64, 2, 2, 2, 2)   # axes: (a, b, c, p_c); phys axis = 4
+    Tl1 = randn(ComplexF64, 2, 2)          # axes: (a, p1); phys axis = 2
+    Tl2 = randn(ComplexF64, 2, 2)          # axes: (b, p2); phys axis = 2
+    Tl3 = randn(ComplexF64, 2, 2)          # axes: (c, p3); phys axis = 2
+    ts_tree  = [Tc, Tl1, Tl2, Tl3]
+    ixs_tree = [[:a, :b, :c, :pc], [:a, :p1], [:b, :p2], [:c, :p3]]
+    ref_tree = exact_norm(ts_tree, ixs_tree)
+    val_tree = braket_value(ts_tree, ixs_tree; chi=10_000)
+    @test val_tree ≈ ref_tree rtol=1e-10
+    @test real(ref_tree) ≥ 0
 end
