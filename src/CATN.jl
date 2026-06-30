@@ -7,11 +7,13 @@ using Adapt
 
 include("linalg_utils.jl")
 include("mps_node.jl")
+include("braket.jl")
 include("tensor_network.jl")
 include("ising.jl")
 include("adapt.jl")
 
 export tsvd, rsvd
+export BraKetNode, braket_node, find_leg
 export MPSNode, raw2mps, mps2raw, order, shape
 export cano_to!, left_canonical!
 export swap!, move!, move2tail!, move2head!, reverse!
