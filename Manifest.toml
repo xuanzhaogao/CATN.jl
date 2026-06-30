@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "1c58852ee12fbfb3d7a05f679c2086769162103c"
+project_hash = "6176bb8bd09b3707f256384fc8c7a9cefe556e57"
 
 [[deps.AbstractTrees]]
 git-tree-sha1 = "2d9c9a55f9c93e8887ad391fbae72f8ef55e1177"
@@ -56,7 +56,7 @@ version = "0.9.10"
 deps = ["Adapt", "LinearAlgebra", "OMEinsum", "Random"]
 path = "."
 uuid = "422e385e-995a-4321-8e96-e5f2713a68e9"
-version = "1.0.0-DEV"
+version = "0.1.0"
 
 [[deps.ChainRulesCore]]
 deps = ["Compat", "LinearAlgebra"]
