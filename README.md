@@ -125,6 +125,26 @@ Correctness is validated against exact tensor-network contraction (OMEinsum's op
 contraction) for small networks, and the Ising layer is checked against analytic
 transfer-matrix and brute-force results.
 
+### Double-layer (bra–ket) norm
+
+`braket_network` builds the double-layer network for the norm `⟨ψ|ψ⟩` of a tensor-network
+state `|ψ⟩` (open labels = physical indices, shared labels = virtual bonds). The ket and bra
+layers are kept separate on every network edge (RAM-efficient); they combine only inside each
+node's MPS, where the environment-aware `χ`-truncation happens.
+
+```julia
+using CATN
+# state |ψ⟩: a chain T1(p1,a) T2(a,p2,b) T3(b,p3)
+tensors = [randn(ComplexF64,2,3), randn(ComplexF64,3,2,3), randn(ComplexF64,3,2)]
+ixs     = [[:p1,:a], [:a,:p2,:b], [:b,:p3]]
+bk = braket_network(tensors, ixs; chi=64)
+lnZ, err, psi = contraction!(bk)
+norm2 = exp(lnZ) * psi      # ≈ ⟨ψ|ψ⟩  (real, ≥ 0)
+```
+
+v1 supports acyclic virtual-bond graphs (chains/trees) and the norm; operators `⟨ψ|O|ψ⟩`,
+overlaps, and loopy (PEPS) states are planned follow-ons.
+
 ## Reference
 
 *Contracting Arbitrary Tensor Networks: General Approximate Algorithm and Applications in

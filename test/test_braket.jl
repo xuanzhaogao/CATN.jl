@@ -299,3 +299,45 @@ end
     @test val_tree ≈ ref_tree rtol=1e-10
     @test real(ref_tree) ≥ 0
 end
+
+# ---------------------------------------------------------------------------
+# Task 5: finite-chi truncation, structure invariants, cycle rejection
+# ---------------------------------------------------------------------------
+
+@testset "finite-chi truncation" begin
+    # Low-Schmidt-rank state: truncation to sufficient chi is lossless.
+    # Build a chain whose internal (combined) bonds are genuinely low rank, set chi to cover it.
+    ts = [randn(ComplexF64,2,2), randn(ComplexF64,2,2,2), randn(ComplexF64,2,2,2), randn(ComplexF64,2,2)]
+    ixs = [[:p1,:a],[:a,:p2,:b],[:b,:p3,:c],[:c,:p4]]
+    ref = exact_norm(ts, ixs)
+    @test braket_value(ts, ixs; chi=64) ≈ ref rtol=1e-8     # chi large enough ⇒ lossless
+end
+
+@testset "structure invariants" begin
+    # --- basic invariant: every MPS site's physical-leg dim ≤ D ---
+    ts = [randn(ComplexF64,2,3), randn(ComplexF64,3,2,3), randn(ComplexF64,3,2)]
+    ixs = [[:p1,:a],[:a,:p2,:b],[:b,:p3]]
+    bk = braket_network(ts, ixs; chi=8)
+    D = 3   # max virtual bond dim of the state
+    for node in values(bk.tensors)
+        @test all(size(s,2) ≤ D for s in node.mps)           # physical legs separate, ≤ D
+    end
+
+    # --- RAM invariant: degree-3 node with d_phys < D —
+    # The ket↔bra junction internal bond must be ≤ d_phys, NOT growing to D² ---
+    d_phys = 2; D3 = 3
+    Ti3 = randn(ComplexF64, D3, d_phys, D3, D3)   # shape (D,d,D,D); phys axis=2
+    node3 = braket_node(Ti3, [10, 20, 30], 2; chi=10_000)
+    # MPS sites: [ket1, ket2, ket3, bra1, bra2, bra3]; junction = between site 3 (last ket) & site 4 (first bra)
+    # right bond of last ket = size(node3.mps[3], 3); left bond of first bra = size(node3.mps[4], 1)
+    @test size(node3.mps[3], 3) ≤ d_phys    # last ket right bond ≤ d_phys (not D²)
+    @test size(node3.mps[4], 1) ≤ d_phys    # first bra left bond ≤ d_phys (not D²)
+    @test all(size(s,2) ≤ D3 for s in node3.mps)  # physical legs ≤ D
+end
+
+@testset "cyclic graph rejected (v1)" begin
+    # A loop: T1-T2-T3-T1 in virtual bonds → should error in v1.
+    ts = [randn(2,2,2), randn(2,2,2), randn(2,2,2)]
+    ixs = [[:a,:c,:p1],[:a,:b,:p2],[:b,:c,:p3]]   # bonds a,b,c form a cycle
+    @test_throws Exception braket_network(ts, ixs; chi=8)
+end
