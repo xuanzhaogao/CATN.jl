@@ -290,3 +290,210 @@ function find_leg(node::BraKetNode, j::Int, isket::Bool)
     end
     return 0
 end
+
+# ---------------------------------------------------------------------------
+# PairedEdge — bookkeeping for one original virtual bond
+# ---------------------------------------------------------------------------
+
+"""
+    PairedEdge
+
+Bookkeeping for one original virtual bond `(i, j)` in the double-layer network.
+For each endpoint (`i` and `j`), we record which MPS leg index in the `BraKetNode`
+corresponds to the ket and bra leg of that bond.
+
+Fields:
+- `i`, `j`          : node IDs of the two endpoints
+- `ket_leg_i`       : 1-based MPS site index of the ket leg at node `i`
+- `bra_leg_i`       : 1-based MPS site index of the bra leg at node `i`
+- `ket_leg_j`       : 1-based MPS site index of the ket leg at node `j`
+- `bra_leg_j`       : 1-based MPS site index of the bra leg at node `j`
+"""
+struct PairedEdge
+    i::Int
+    j::Int
+    ket_leg_i::Int
+    bra_leg_i::Int
+    ket_leg_j::Int
+    bra_leg_j::Int
+end
+
+# ---------------------------------------------------------------------------
+# BraKetNetwork
+# ---------------------------------------------------------------------------
+
+"""
+    BraKetNetwork{T,AT}
+
+A double-layer (bra–ket) tensor network for computing `⟨ψ|ψ⟩`.
+Each site `i` is stored as a `BraKetNode{T,AT}`.  Every original virtual bond
+`(i,j)` is tracked as a `PairedEdge` holding the ket and bra MPS-leg indices
+on both endpoints.
+
+Contraction params and accumulators mirror `TensorNetwork`.
+"""
+mutable struct BraKetNetwork{T,AT<:AbstractArray{T,3}}
+    tensors::Dict{Int,BraKetNode{T,AT}}
+    edges::Vector{PairedEdge}          # one entry per original virtual bond
+    lnZ::T
+    sign::T
+    psi::T
+    chi::Int
+    cutoff::Float64
+    norm_method::Int
+    svdopt::Bool
+    swapopt::Bool
+    maxdim_intermediate::Int
+    rng::AbstractRNG
+end
+
+# ---------------------------------------------------------------------------
+# braket_network constructor
+# ---------------------------------------------------------------------------
+
+"""
+    braket_network(tensors, ixs; chi=64, cutoff=1e-15, norm_method=1,
+                   svdopt=true, swapopt=true, seed=1) -> BraKetNetwork
+
+Build a double-layer network from a ket state `(tensors, ixs)`.
+
+`ixs[i]` are the index labels for `tensors[i]`.  Labels appearing in exactly
+one tensor are physical indices; labels shared by two tensors are virtual bonds.
+Each tensor must have **exactly one** physical index (v1).
+
+A `BraKetNode` is built for every site. Each shared virtual bond becomes a
+`PairedEdge` recording the ket and bra MPS-leg indices on both endpoints.
+
+**Cyclic virtual-bond graphs are rejected** — v1 supports acyclic (chain/tree)
+topologies only.
+"""
+function braket_network(tensors::Vector{<:AbstractArray},
+                        ixs::Vector{<:AbstractVector};
+                        chi::Int=64, cutoff::Float64=1e-15, norm_method::Int=1,
+                        svdopt::Bool=true, swapopt::Bool=true, seed::Int=1)
+    n = length(tensors)
+    n == length(ixs) || error("braket_network: length(tensors) != length(ixs)")
+
+    # ------------------------------------------------------------------
+    # Step 1: classify labels as physical (open, count=1) or virtual (shared, count=2)
+    # ------------------------------------------------------------------
+    label_count   = Dict{Any,Int}()
+    label_owners  = Dict{Any,Vector{Int}}()   # label -> [site_ids]
+    for i in 1:n
+        for l in ixs[i]
+            label_count[l]  = get(label_count, l, 0) + 1
+            owners          = get!(label_owners, l, Int[])
+            push!(owners, i)
+        end
+    end
+
+    # Validate: each virtual label appears in exactly 2 tensors
+    for (l, cnt) in label_count
+        cnt == 1 || cnt == 2 ||
+            error("braket_network: label $l appears $cnt times (expected 1 or 2)")
+    end
+
+    # Each tensor must have exactly one physical label
+    for i in 1:n
+        nphys = count(l -> label_count[l] == 1, ixs[i])
+        nphys == 1 || error("braket_network: tensor $i has $nphys physical (open) labels, expected 1")
+    end
+
+    # ------------------------------------------------------------------
+    # Step 2: Detect cycles in the virtual-bond graph (acyclic = tree/chain only)
+    # Union-Find over node IDs 1..n
+    # ------------------------------------------------------------------
+    parent = collect(1:n)
+    function find_root(x)
+        while parent[x] != x; parent[x] = parent[parent[x]]; x = parent[x]; end
+        return x
+    end
+    function union!(x, y)
+        rx, ry = find_root(x), find_root(y)
+        rx == ry && error("braket_network: virtual-bond graph contains a cycle — cyclic graphs are not supported in v1")
+        parent[rx] = ry
+    end
+    for (l, cnt) in label_count
+        if cnt == 2
+            i, j = label_owners[l][1], label_owners[l][2]
+            union!(i, j)
+        end
+    end
+
+    # ------------------------------------------------------------------
+    # Step 3: Build BraKetNodes
+    # For each tensor i, collect:
+    #   - phys_pos : axis index of the physical label
+    #   - ket_neighbors : neighbor node IDs for each virtual axis (in axis order)
+    # ------------------------------------------------------------------
+    T    = promote_type(map(eltype, tensors)...)
+    AT   = nothing   # will be set from first node
+
+    node_dict = Dict{Int,BraKetNode}()
+    for i in 1:n
+        virt_axes   = Int[]
+        ket_neighbors = Int[]
+        phys_pos    = 0
+        for (ax, l) in enumerate(ixs[i])
+            if label_count[l] == 1
+                phys_pos = ax
+            else
+                push!(virt_axes, ax)
+                j = label_owners[l][1] == i ? label_owners[l][2] : label_owners[l][1]
+                push!(ket_neighbors, j)
+            end
+        end
+        phys_pos > 0 || error("braket_network: could not find physical axis for tensor $i")
+
+        node = braket_node(tensors[i], ket_neighbors, phys_pos;
+                           chi=chi, cutoff=cutoff, norm_method=norm_method,
+                           svdopt=svdopt, swapopt=swapopt)
+        node_dict[i] = node
+    end
+
+    # ------------------------------------------------------------------
+    # Step 4: Build PairedEdge list
+    # For each virtual bond (pair of sites), record the ket/bra MPS leg
+    # indices on both endpoints using find_leg.
+    # ------------------------------------------------------------------
+    edges = PairedEdge[]
+    for (l, cnt) in label_count
+        cnt == 2 || continue
+        i, j = label_owners[l][1], label_owners[l][2]
+        ni   = node_dict[i]
+        nj   = node_dict[j]
+        ket_leg_i = find_leg(ni, j, true)
+        bra_leg_i = find_leg(ni, j, false)
+        ket_leg_j = find_leg(nj, i, true)
+        bra_leg_j = find_leg(nj, i, false)
+        push!(edges, PairedEdge(i, j, ket_leg_i, bra_leg_i, ket_leg_j, bra_leg_j))
+    end
+
+    # ------------------------------------------------------------------
+    # Step 5: Infer type parameters and construct the network
+    # ------------------------------------------------------------------
+    # Get concrete node type from the first node
+    first_node = first(values(node_dict))
+    T_concrete  = eltype(eltype(first_node.mps))
+    AT_concrete = eltype(first_node.mps)
+
+    # Build a typed Dict
+    typed_dict = Dict{Int,typeof(first_node)}()
+    for (k, v) in node_dict
+        typed_dict[k] = v
+    end
+
+    zero_T = zero(T_concrete)
+    one_T  = one(T_concrete)
+    rng    = MersenneTwister(seed)
+
+    return BraKetNetwork{T_concrete,AT_concrete}(
+        typed_dict, edges,
+        zero_T,   # lnZ
+        one_T,    # sign
+        one_T,    # psi
+        chi, cutoff, norm_method, svdopt, swapopt,
+        chi,      # maxdim_intermediate (= chi by default)
+        rng
+    )
+end

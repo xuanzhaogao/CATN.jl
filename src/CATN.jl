@@ -13,7 +13,7 @@ include("ising.jl")
 include("adapt.jl")
 
 export tsvd, rsvd
-export BraKetNode, braket_node, find_leg
+export BraKetNode, braket_node, find_leg, BraKetNetwork, braket_network
 export MPSNode, raw2mps, mps2raw, order, shape
 export cano_to!, left_canonical!
 export swap!, move!, move2tail!, move2head!, reverse!

@@ -1,6 +1,18 @@
 using CATN
 using CATN: BraKetNode, braket_node, mps2raw, cano_to!, left_canonical!
+using CATN: BraKetNetwork, braket_network
 using OMEinsum, LinearAlgebra, Test
+
+# Exact ⟨ψ|ψ⟩ via a direct double-layer contraction (independent oracle).
+function exact_norm(tensors, ixs)
+    n = length(tensors)
+    # relabel: ket keeps labels; bra gets distinct labels for virtual bonds, shares physical.
+    counts = Dict{Any,Int}(); for ix in ixs, l in ix; counts[l]=get(counts,l,0)+1; end
+    bra_ix = [map(l -> counts[l]==2 ? (l, :bra) : l, ix) for ix in ixs]  # virtual→distinct, physical shared
+    all_t   = vcat(collect(tensors), [conj(t) for t in tensors])
+    all_ix  = vcat([collect(ix) for ix in ixs], [collect(b) for b in bra_ix])
+    return exact_contract(all_t, all_ix)[]
+end
 
 @testset "braket" begin
     @testset "braket_node builds the double tensor E_i (complex, degree-2)" begin
@@ -78,4 +90,26 @@ using OMEinsum, LinearAlgebra, Test
         E = ein"apb,cpd->abcd"(Ti, conj(Ti))   # (v1, v2, v1', v2')
         @test mps2raw(node) ≈ E
     end
+end
+
+@testset "braket_network construction" begin
+    # 3-site chain (acyclic): T1(p1,a) T2(a,p2,b) T3(b,p3)
+    T1 = randn(ComplexF64, 2, 3)
+    T2 = randn(ComplexF64, 3, 2, 3)
+    T3 = randn(ComplexF64, 3, 2)
+    tensors = [T1, T2, T3]
+    ixs = [[:p1, :a], [:a, :p2, :b], [:b, :p3]]
+    bk = braket_network(tensors, ixs; chi=10_000)
+    @test bk isa BraKetNetwork
+    @test length(bk.tensors) == 3
+    # each node reconstructs its E_i (spot-check node 2 has 4 physical legs: 2 ket + 2 bra)
+    @test count(bk.tensors[2].layer) == 2 && count(!, bk.tensors[2].layer) == 2
+
+    # Cyclic graph (triangle) should be rejected
+    Ta = randn(ComplexF64, 2, 2, 2)
+    Tb = randn(ComplexF64, 2, 2, 2)
+    Tc = randn(ComplexF64, 2, 2, 2)
+    tensors_cyc = [Ta, Tb, Tc]
+    ixs_cyc = [[:p1, :a, :c], [:a, :p2, :b], [:b, :p3, :c]]
+    @test_throws Exception braket_network(tensors_cyc, ixs_cyc)
 end
