@@ -1,5 +1,5 @@
 using CATN
-using CATN: BraKetNode, braket_node, mps2raw
+using CATN: BraKetNode, braket_node, mps2raw, cano_to!, left_canonical!
 using OMEinsum, LinearAlgebra, Test
 
 @testset "braket" begin
@@ -61,5 +61,21 @@ using OMEinsum, LinearAlgebra, Test
         @test raw ≈ E
         @test node.layer == [true, true, true, false, false, false]
         @test node.neighbor == [10, 20, 30, 10, 20, 30]
+    end
+
+    @testset "braket_node is left-canonical" begin
+        D, d = 4, 2
+        Ti = randn(ComplexF64, D, d, D)
+        node = braket_node(Ti, [1, 2], 2; chi=10_000)
+        @test node.cano == length(node.mps)
+        # all sites before the center are left-isometric: M'*M ≈ I
+        for k in 1:node.cano-1
+            A = node.mps[k]; dl, dp, dr = size(A)
+            M = reshape(A, dl*dp, dr)
+            @test M' * M ≈ I atol=1e-8
+        end
+        # canonicalization preserves the represented tensor
+        E = ein"apb,cpd->abcd"(Ti, conj(Ti))   # (v1, v2, v1', v2')
+        @test mps2raw(node) ≈ E
     end
 end

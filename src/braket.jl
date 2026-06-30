@@ -176,11 +176,63 @@ function braket_node(Ti::AbstractArray{T}, ket_neighbors::Vector{Int}, phys_pos:
     all_sites    = AT_type[ket_sites..., bra_sites...]
     neighbor_vec = Int[ket_neighbors..., ket_neighbors...]
     layer_vec    = Bool[trues(deg)..., falses(deg)...]
-    cano_val     = 2 * deg    # left-canonical: center at last site
+    cano_val     = 1    # will be updated by left_canonical! below
 
-    return BraKetNode{T,AT_type}(all_sites, neighbor_vec, layer_vec,
+    node = BraKetNode{T,AT_type}(all_sites, neighbor_vec, layer_vec,
                                   cano_val, chi, cutoff, norm_method, svdopt, swapopt)
+    left_canonical!(node)
+    return node
 end
+
+# ---------------------------------------------------------------------------
+# Canonicalization for BraKetNode (mirrors MPSNode's cano_to! / left_canonical!)
+# ---------------------------------------------------------------------------
+
+"""
+    cano_to!(node::BraKetNode, idx)
+
+Move the canonical center of `node.mps` to position `idx` by sweeping
+left-to-right (center < idx) or right-to-left (center > idx) with rank-
+preserving re-SVDs.  Uses `cutoff=0.0` (keep all columns) just like
+`MPSNode.cano_to!`.  Only `node.mps` and `node.cano` are modified;
+`node.neighbor` and `node.layer` are untouched (canonicalization re-SVDs
+adjacent sites in place — it does not permute site order).
+"""
+function cano_to!(node::BraKetNode, idx::Int)
+    idx == 0 && (idx = length(node.mps))
+    node.cano == idx && return node
+    if node.cano < idx
+        # Sweep right: move center from node.cano to idx
+        for i in node.cano:idx-1
+            dl, d, dr = size(node.mps[i])
+            U, S, V = tsvd(reshape(node.mps[i], dl*d, :); cutoff=0.0)
+            nkeep = count(>(node.cutoff), S)
+            nkeep = nkeep == 0 ? length(S) : nkeep
+            U = U[:, 1:nkeep]; S = S[1:nkeep]; V = V[:, 1:nkeep]
+            node.mps[i] = reshape(U, dl, d, nkeep)
+            R = Diagonal(S) * V'
+            node.mps[i+1] = ein"ij,jab->iab"(R, node.mps[i+1])
+            node.cano = i + 1
+        end
+    else
+        # Sweep left: move center from node.cano to idx
+        for i in node.cano:-1:idx+1
+            dl, d, dr = size(node.mps[i])
+            Mt = reshape(permutedims(node.mps[i], (2, 3, 1)), d*dr, dl)
+            U, S, V = tsvd(Mt; cutoff=0.0)
+            nkeep = count(>(node.cutoff), S)
+            nkeep = nkeep == 0 ? length(S) : nkeep
+            U = U[:, 1:nkeep]; S = S[1:nkeep]; V = V[:, 1:nkeep]
+            node.mps[i] = permutedims(reshape(U, d, dr, nkeep), (3, 1, 2))
+            R = Diagonal(S) * V'                     # shape (nkeep, dl)
+            node.mps[i-1] = ein"abc,cd->abd"(node.mps[i-1], permutedims(R, (2, 1)))
+            node.cano = i - 1
+        end
+    end
+    return node
+end
+
+left_canonical!(node::BraKetNode) = (node.cano = 1; cano_to!(node, length(node.mps)))
 
 # ---------------------------------------------------------------------------
 # mps2raw for BraKetNode — generic MPS reconstruction, tags ignored
