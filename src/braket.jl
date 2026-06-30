@@ -336,7 +336,6 @@ mutable struct BraKetNetwork{T,AT<:AbstractArray{T,3}}
     tensors::Dict{Int,BraKetNode{T,AT}}
     edges::Vector{PairedEdge}          # one entry per original virtual bond
     lnZ::T
-    sign::T
     psi::T
     chi::Int
     cutoff::Float64
@@ -408,7 +407,7 @@ function braket_network(tensors::Vector{<:AbstractArray},
         while parent[x] != x; parent[x] = parent[parent[x]]; x = parent[x]; end
         return x
     end
-    function union!(x, y)
+    function link!(x, y)
         rx, ry = find_root(x), find_root(y)
         rx == ry && error("braket_network: virtual-bond graph contains a cycle — cyclic graphs are not supported in v1")
         parent[rx] = ry
@@ -416,7 +415,7 @@ function braket_network(tensors::Vector{<:AbstractArray},
     for (l, cnt) in label_count
         if cnt == 2
             i, j = label_owners[l][1], label_owners[l][2]
-            union!(i, j)
+            link!(i, j)
         end
     end
 
@@ -427,7 +426,6 @@ function braket_network(tensors::Vector{<:AbstractArray},
     #   - ket_neighbors : neighbor node IDs for each virtual axis (in axis order)
     # ------------------------------------------------------------------
     T    = promote_type(map(eltype, tensors)...)
-    AT   = nothing   # will be set from first node
 
     node_dict = Dict{Int,BraKetNode}()
     for i in 1:n
@@ -490,10 +488,9 @@ function braket_network(tensors::Vector{<:AbstractArray},
     return BraKetNetwork{T_concrete,AT_concrete}(
         typed_dict, edges,
         zero_T,   # lnZ
-        one_T,    # sign
         one_T,    # psi
         chi, cutoff, norm_method, svdopt, swapopt,
-        chi,      # maxdim_intermediate (= chi by default)
+        0,        # maxdim_intermediate (starts at 0; updated to peak during contraction)
         rng
     )
 end

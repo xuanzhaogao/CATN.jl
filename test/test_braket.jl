@@ -282,7 +282,11 @@ end
     @test val5 ≈ ref5 rtol=1e-10
     @test real(ref5) ≥ 0
 
-    # --- case 4: acyclic tree (star topology, 4 nodes: 1 center, 3 leaves) ---
+    # --- case 4: real 3-site chain with svdopt=false (exercises compress! path) ---
+    val3r_noopt = braket_value(ts3r, ixs3r; chi=10_000, svdopt=false)
+    @test val3r_noopt ≈ ref3r rtol=1e-10
+
+    # --- case 5: acyclic tree (star topology, 4 nodes: 1 center, 3 leaves) ---
     # center: T_c(a, b, c, p_c) - 3 virtual bonds + 1 physical
     # leaf 1: T_l1(a, p1)
     # leaf 2: T_l2(b, p2)
