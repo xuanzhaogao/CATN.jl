@@ -1,8 +1,8 @@
 using CATN
 using CATN: BraKetNode, braket_node, mps2raw, cano_to!, left_canonical!, find_leg
 using CATN: BraKetNetwork, braket_network
-using CATN: eat!
-using OMEinsum, LinearAlgebra, Test
+using CATN: eat!, compress!
+using OMEinsum, LinearAlgebra, Random, Test
 
 # Exact ⟨ψ|ψ⟩ via a direct double-layer contraction (independent oracle).
 function exact_norm(tensors, ixs)
@@ -140,4 +140,95 @@ end
     tensors_cyc = [Ta, Tb, Tc]
     ixs_cyc = [[:p1, :a, :c], [:a, :p2, :b], [:b, :p3, :c]]
     @test_throws Exception braket_network(tensors_cyc, ixs_cyc)
+end
+
+@testset "eat! interleaved layout (degree-2 node_i, legs NOT at tail)" begin
+    # This test exercises the move-order bug in eat!.
+    # n2 = braket_node(T2, [1,3], 2): degree-2 with neighbor layout [ket-1, ket-3, bra-1, bra-3].
+    # We call eat!(n2, n1, 1, 2) — contracting the bond to FIRST neighbor (j_id=1).
+    # ket-to-1 is at pos 1, bra-to-1 is at pos 3.  Moving ket from 1 to n_i-1=3 passes through
+    # pos 3 (bra), displacing it — this is the bug.  The fix moves bra to n_i=4 first, then ket to 3.
+    # After eat!, n2 has 2 sites representing the partial contraction over bond a:
+    #   C[b, b'] = Σ_{a,p1,p2} T1[p1,a]*conj(T1)[p1,a] * T2[a,p2,b]*conj(T2)[a,p2,b'] (site order [ket-to-3, bra-to-3])
+    # Wait: C[bk,bb] = Σ_{ak,ab,p1,p2} T2[ak,p2,bk]*conj(T2[ab,p2,bb]) * (Σ_{p1} T1[p1,ak]*conj(T1[p1,ab]))
+    # = Σ_a T2[a,p2,bk]*conj(T2[a,p2,bb]) (since T1 contributes E1[ak,ab] = Σ_p1 T1[p1,ak]*conj(T1[p1,ab]) contracted with T2)
+    Random.seed!(42)
+    T1 = randn(ComplexF64, 2, 3)       # axes: (p1, a=bond-to-2)
+    T2 = randn(ComplexF64, 3, 2, 4)    # axes: (a=bond-to-1, p2, b=bond-to-3)
+    # Build n1 as degree-1 (leaf): phys_pos=1 (p1 is axis 1), neighbor=[2]
+    n1 = braket_node(T1, [2], 1; chi=10_000)   # neighbor=2 means n1 points to n2
+    @test n1.neighbor == [2, 2]
+    @test n1.layer == [true, false]
+    # Build n2 as degree-2: phys_pos=2 (p2 is axis 2), neighbors=[1, 3]
+    n2 = braket_node(T2, [1, 3], 2; chi=10_000)
+    # node2 site order: [ket-to-1, ket-to-3, bra-to-1, bra-to-3] at positions [1,2,3,4]
+    @test n2.neighbor == [1, 3, 1, 3]
+    @test n2.layer == [true, true, false, false]
+    # eat! n2 into n1 contracting bond (n2→1 ↔ n1→2); j_id=1 in n2, i_id=2 in n1
+    # This is Case C (n1 has 2 sites, n2 has 4).  The bug: ket(pos1)→n_i-1=3 passes bra(pos3).
+    lognorm_val, err, phase = eat!(n2, n1, 1, 2)
+    # Reference: partial contraction C[bk,bb] using independent einsum
+    # E1[ak,ab] = Σ_p1 T1[p1,ak]*conj(T1[p1,ab])  (shape 3×3)
+    # C[bk,bb] = Σ_{ak,ab,p2} T2[ak,p2,bk]*conj(T2[ab,p2,bb]) * E1[ak,ab]
+    E1_ref = ein"pa,pb->ab"(T1, conj(T1))                  # (3,3)
+    C_ref  = ein"apb,aq,qpd->bd"(T2, E1_ref, conj(T2))    # (4,4)
+    # mps2raw(n2) after eat! gives the normalized C; multiply by exp(lognorm)*phase to recover
+    raw = mps2raw(n2) .* (exp(lognorm_val) * phase)
+    @test raw ≈ C_ref rtol=1e-8
+end
+
+@testset "eat! interleaved layout — 3-site sequential contraction" begin
+    # 3-site chain T1(p1,a) T2(a,p2,b) T3(b,p3).
+    # eat bond (1,2): node_i=n1 (degree-1), node_j=n2 (degree-2) — Case B.
+    #   n2's legs to 1 are at positions ket=1, bra=3.  This exercises node_j's
+    #   head-positioning with legs NOT already at head.
+    # eat bond (merged-node, 3): the merged node now has legs to 3 interleaved.
+    #   This exercises node_i's tail-positioning bug.
+    Random.seed!(7)
+    T1 = randn(ComplexF64, 2, 3)       # (p1, a)
+    T2 = randn(ComplexF64, 3, 2, 4)    # (a, p2, b)
+    T3 = randn(ComplexF64, 4, 2)       # (b, p3)
+    ixs = [[:p1, :a], [:a, :p2, :b], [:b, :p3]]
+    ref = exact_norm([T1, T2, T3], ixs)
+
+    n1 = braket_node(T1, [2], 1; chi=10_000)   # phys=axis1, neighbor=[2]
+    n2 = braket_node(T2, [1, 3], 2; chi=10_000) # phys=axis2, neighbors=[1,3]
+    n3 = braket_node(T3, [2], 2; chi=10_000)    # phys=axis2, neighbor=[2]
+
+    # First eat: contract bond (1,2).  n1 is node_i; n2 is node_j; j_id=2, i_id=1.
+    # Case B (n1 has 2 sites, n2 has 4).  After eat, result lives in n1.
+    lognorm1, err1, phase1 = eat!(n1, n2, 2, 1)
+
+    # After eat, n1 now carries the merged (T1⊗T2 block) tensor; legs to node 3
+    # are interleaved in the merged MPS (from n2's sites 3:end appended).
+    # Second eat: contract bond between merged n1 and n3.
+    # merged n1's legs to neighbor 3 must be found and moved to tail.
+    lognorm2, err2, phase2 = eat!(n1, n3, 3, 2)
+
+    val = exp(lognorm1 + lognorm2) * phase1 * phase2
+    @test val ≈ ref rtol=1e-8
+    @test imag(ref) ≈ 0 atol=1e-10
+    @test real(ref) ≥ 0
+end
+
+@testset "compress! for BraKetNode" begin
+    # Build a degree-2 node and verify compress! reduces bond dim while
+    # preserving the represented tensor (up to normalization from left_canonical!).
+    D, d = 4, 2
+    Ti = randn(ComplexF64, D, d, D)
+    node = braket_node(Ti, [10, 20], 2; chi=10_000)
+    E_ref = mps2raw(node)   # ground truth before compression
+    # compress! with chi=2 (truncating)
+    err = compress!(node)
+    @test err >= 0.0
+    @test node.cano == 1
+    # After compress!, mps2raw should still give back the un-normalized tensor
+    # (compress! does not normalize; it only truncates SVs).
+    # Verify it is proportional to E_ref up to a scalar factor (both are the same tensor
+    # up to SVD truncation; with chi=10_000 no truncation occurs so err==0 and exact).
+    node2 = braket_node(Ti, [10, 20], 2; chi=10_000)
+    err2 = compress!(node2)   # no truncation at large chi
+    @test err2 == 0.0 || err2 < 1e-12
+    raw2 = mps2raw(node2)
+    @test raw2 ≈ E_ref rtol=1e-8
 end

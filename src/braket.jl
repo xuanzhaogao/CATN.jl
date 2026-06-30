@@ -626,8 +626,11 @@ Contract the paired (ket, bra) virtual legs of the bond between nodes `i` and
 `node_j.neighbor`.
 
 Algorithm:
-1. Move `i`'s ket leg (neighbor=`j_id`, layer=true) to position `n_i-1`.
-2. Re-find and move `i`'s bra leg (neighbor=`j_id`, layer=false) to `n_i`.
+1. Move `i`'s bra leg (neighbor=`j_id`, layer=false) to position `n_i` first.
+2. Re-find `i`'s ket leg (neighbor=`j_id`, layer=true) and move to `n_i-1`.
+   (Bra-first order is required: a move to `n_i-1` never touches position `n_i`,
+   so the bra placed there remains undisturbed.  Ket-first would have the bra
+   move displace the ket via the (n_i-1, n_i) swap.)
 3. Move `j`'s ket leg to position 1; re-find and move bra to position 2.
 4. Fuse `i`'s last two sites into `W_i` (dl, Dk, Db); fuse `j`'s first two
    into `W_j` (Dk, Db, dr); contract `W_i` and `W_j` over Dk and Db →
@@ -642,14 +645,20 @@ function eat!(node_i::BraKetNode{T}, node_j::BraKetNode{T}, j_id::Int, i_id::Int
 
     # -----------------------------------------------------------------------
     # Step 1: bring i's paired legs to the MPS tail (positions n_i-1, n_i)
+    # Order matters: move bra to n_i FIRST (its final position), then re-find
+    # the ket and move it to n_i-1.  A move ending at n_i-1 only touches
+    # positions ≤ n_i-1 (swaps up to (n_i-2, n_i-1)) and never disturbs
+    # position n_i, so the bra stays put.  The reverse (ket first) is NOT
+    # safe: moving bra to n_i afterwards does a swap at (n_i-1, n_i) which
+    # displaces the ket that was just placed at n_i-1.
     # -----------------------------------------------------------------------
-    ki = find_leg(node_i, j_id, true)
-    ki > 0 || error("eat!: ket leg to neighbor $j_id not found in node_i")
-    error_acc += move!(node_i, ki, n_i - 1)
-    # Re-find bra after the ket move (neighbor/layer are updated by swap!)
     bi = find_leg(node_i, j_id, false)
     bi > 0 || error("eat!: bra leg to neighbor $j_id not found in node_i")
     error_acc += move!(node_i, bi, n_i)
+    # Re-find ket after the bra move (neighbor/layer are updated by swap!)
+    ki = find_leg(node_i, j_id, true)
+    ki > 0 || error("eat!: ket leg to neighbor $j_id not found in node_i")
+    error_acc += move!(node_i, ki, n_i - 1)
 
     # Canonicalize to the last site so it carries the un-normalized weight
     cano_to!(node_i, n_i)
@@ -789,4 +798,109 @@ function eat!(node_i::BraKetNode{T}, node_j::BraKetNode{T}, j_id::Int, i_id::Int
         node_i.mps[end] ./= norm
         return (log(norm), error_acc, one(T))
     end
+end
+
+# ---------------------------------------------------------------------------
+# compress! / compress_opt! for BraKetNode
+# ---------------------------------------------------------------------------
+
+"""
+    compress!(node::BraKetNode) -> Float64
+
+Compress the whole MPS by first left-canonicalizing (moving `cano` to the last
+site), then sweeping right-to-left with two-site SVD truncation to `node.chi`.
+
+For each step `j` from `length(mps)` down to `2` (with `i = j-1`):
+1. Fuse sites `i` and `j` via `ein"ijk,kab->ijab"` reshaped to `(d0*d1, d2*d3)`.
+2. Truncated SVD to `node.chi`.
+3. Write back `mps[i] = reshape(U*Diagonal(S), d0, d1, :)`,
+   `mps[j] = reshape(V', :, d2, d3)`.
+
+Compression re-SVDs adjacent sites in place and does NOT permute site order,
+so `neighbor` and `layer` are untouched.  Sets `cano = 1` and returns the
+accumulated truncation error (sum of discarded singular values over all steps).
+"""
+function compress!(node::BraKetNode)
+    error = 0.0
+    isempty(node.mps) && return error
+    left_canonical!(node)   # cano now at last site
+    mps = node.mps
+    for j in length(mps):-1:2
+        i = j - 1
+        tl = mps[i]
+        tr = mps[j]
+        d0, d1 = size(tl, 1), size(tl, 2)
+        d2, d3 = size(tr, 2), size(tr, 3)
+        mat = reshape(ein"ijk,kab->ijab"(tl, tr), d0 * d1, d2 * d3)
+        U, S, V, err = tsvd(mat; cutoff=node.cutoff, maxdim=node.chi)
+        error += err
+        myd = length(S)
+        mps[i] = reshape(U * Diagonal(S), d0, d1, myd)
+        mps[j] = reshape(copy(V'), myd, d2, d3)
+    end
+    node.cano = 1
+    return error
+end
+
+"""
+    compress_opt!(node::BraKetNode) -> Float64
+
+Like `compress!` but uses QR decomposition before SVD to reduce the size of
+the matrix passed to SVD (mirrors `MPSNode.compress_opt!`).
+
+Returns the accumulated truncation error.  `neighbor` and `layer` are untouched.
+"""
+function compress_opt!(node::BraKetNode)
+    error = 0.0
+    isempty(node.mps) && return error
+    left_canonical!(node)   # cano now at last site
+    mps = node.mps
+    for j in length(mps):-1:2
+        i = j - 1
+        tl = mps[i]
+        tr = mps[j]
+        d0, d1 = size(tl, 1), size(tl, 2)
+        d2, d3 = size(tr, 2), size(tr, 3)
+        dd = size(tl, 3)   # == size(tr, 1)
+
+        matl = reshape(tl, d0 * d1, dd)
+        matr = reshape(tr, dd, d2 * d3)
+
+        flag_left  = false
+        flag_right = false
+        local Ql, Qr
+
+        ET = eltype(matl)
+        if size(matl, 1) > size(matl, 2)
+            flag_left = true
+            Fl = qr(matl)
+            Ql = _thin_q(Fl.Q, matl, ET, size(matl, 2))
+            Rl = copy(Fl.R)
+        else
+            Rl = matl
+        end
+
+        if size(matr, 1) < size(matr, 2)
+            flag_right = true
+            Fr = qr(matr')
+            Qr = _thin_q(Fr.Q, matr', ET, size(matr', 2))
+            Rr = copy(Fr.R)
+        else
+            Rr = matr'
+        end
+
+        mat = Rl * Rr'
+        U, S, V, err = tsvd(mat; cutoff=node.cutoff, maxdim=node.chi)
+        error += err
+        myd = length(S)
+
+        U = U * Diagonal(S)
+        flag_left  && (U = Ql * U)
+        flag_right && (V = Qr * V)
+
+        mps[i] = reshape(U, d0, d1, myd)
+        mps[j] = reshape(copy(V'), myd, d2, d3)
+    end
+    node.cano = 1
+    return error
 end
