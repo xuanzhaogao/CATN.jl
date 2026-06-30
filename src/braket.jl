@@ -497,3 +497,296 @@ function braket_network(tensors::Vector{<:AbstractArray},
         rng
     )
 end
+
+# ---------------------------------------------------------------------------
+# BraKetNode MPS movement helpers (mirror MPSNode's but also track `layer`)
+# ---------------------------------------------------------------------------
+
+"""
+    swap!(node::BraKetNode, i, j) -> Float64
+
+Swap adjacent MPS sites `i` and `j` (`|i-j|==1`).  Identical algorithm to
+`MPSNode.swap!`, but permutes both `node.neighbor` **and** `node.layer` in
+lockstep with the MPS sites so that the layer tag (ket/bra) rides along
+correctly.  Returns the truncation error.
+"""
+function swap!(node::BraKetNode, i::Int, j::Int)
+    mps = node.mps
+    @assert abs(i - j) == 1 "swap!: i and j must be consecutive indices"
+    @assert 1 <= i <= length(mps) && 1 <= j <= length(mps) "swap!: indices out of range"
+
+    # Pre-move canonical center to the nearer of i or j if it's elsewhere
+    if node.cano != i && node.cano != j
+        target = abs(node.cano - i) < abs(node.cano - j) ? i : j
+        cano_to!(node, target)
+    end
+
+    # Always work with left < right
+    if i < j
+        tl = mps[i]; tr = mps[j]
+    else
+        tl = mps[j]; tr = mps[i]
+    end
+
+    d0 = size(tl, 1)
+    d1 = size(tr, 2)   # physical of tr moves to left after swap
+    d2 = size(tl, 2)   # physical of tl moves to right after swap
+    d3 = size(tr, 3)
+
+    W = ein"ijk,kab->iajb"(tl, tr)    # (d0, d1, d2, d3)
+    M = reshape(W, d0 * d1, d2 * d3)
+
+    rows, cols = size(M)
+    U, S, V, err = if node.swapopt && ((rows > 7000 && cols > 7000) || rows > 20000 || cols > 20000)
+        U2, S2, V2 = rsvd(M, node.chi, 10, 10)
+        U2, S2, V2, 0.0
+    else
+        tsvd(M; cutoff=node.cutoff, maxdim=node.chi)
+    end
+
+    myd = length(S)
+    error = err
+
+    if i < j  # going right: center ends at j
+        node.mps[i] = reshape(U, d0, d1, myd)
+        node.mps[j] = reshape(Diagonal(S) * V', myd, d2, d3)
+    else  # going left: center ends at j
+        node.mps[j] = reshape(U * Diagonal(S), d0, d1, myd)
+        node.mps[i] = reshape(copy(V'), myd, d2, d3)
+    end
+
+    node.cano = j
+
+    # Rotate neighbor and layer in lockstep with the two MPS sites
+    node.neighbor[i], node.neighbor[j] = node.neighbor[j], node.neighbor[i]
+    node.layer[i],    node.layer[j]    = node.layer[j],    node.layer[i]
+
+    return error
+end
+
+"""
+    move!(node::BraKetNode, a, b) -> Float64
+
+Move site `a` to position `b` via sequential `swap!` calls, tracking both
+`neighbor` and `layer`.  Returns accumulated truncation error.
+"""
+function move!(node::BraKetNode, a::Int, b::Int)
+    error = 0.0
+    a == b && return error
+    if b > a
+        for idx in a:b-1
+            error += swap!(node, idx, idx + 1)
+        end
+    else
+        for idx in a:-1:b+1
+            error += swap!(node, idx, idx - 1)
+        end
+    end
+    return error
+end
+
+"""
+    move2tail!(node::BraKetNode, idx) -> Float64
+
+Move site `idx` to the last position.  Returns accumulated truncation error.
+"""
+function move2tail!(node::BraKetNode, idx::Int)
+    error = 0.0
+    n = length(node.mps)
+    idx == n && (cano_to!(node, n); return error)
+    for k in idx:n-1
+        error += swap!(node, k, k + 1)
+    end
+    cano_to!(node, n)
+    return error
+end
+
+"""
+    move2head!(node::BraKetNode, idx) -> Float64
+
+Move site `idx` to the first position.  Returns accumulated truncation error.
+"""
+function move2head!(node::BraKetNode, idx::Int)
+    error = move!(node, idx, 1)
+    cano_to!(node, 1)
+    return error
+end
+
+# ---------------------------------------------------------------------------
+# eat! for BraKetNode — contracts the PAIRED ket + bra legs of a shared bond
+# ---------------------------------------------------------------------------
+
+"""
+    eat!(node_i::BraKetNode, node_j::BraKetNode, j_id::Int, i_id::Int)
+         -> (lognorm::Float64, error::Float64, phase)
+
+Contract the paired (ket, bra) virtual legs of the bond between nodes `i` and
+`j`.  `j_id` is the neighbor id of `j` as recorded in `node_i.neighbor`
+(i.e. how `i` labels `j`); `i_id` is the neighbor id of `i` as recorded in
+`node_j.neighbor`.
+
+Algorithm:
+1. Move `i`'s ket leg (neighbor=`j_id`, layer=true) to position `n_i-1`.
+2. Re-find and move `i`'s bra leg (neighbor=`j_id`, layer=false) to `n_i`.
+3. Move `j`'s ket leg to position 1; re-find and move bra to position 2.
+4. Fuse `i`'s last two sites into `W_i` (dl, Dk, Db); fuse `j`'s first two
+   into `W_j` (Dk, Db, dr); contract `W_i` and `W_j` over Dk and Db →
+   `mat` of shape (dl, dr).
+5. Fold `mat` into the MPS, append `j`'s remaining sites (3:end), update
+   `neighbor` and `layer`, normalize, return `(lognorm, error, phase)`.
+"""
+function eat!(node_i::BraKetNode{T}, node_j::BraKetNode{T}, j_id::Int, i_id::Int) where {T}
+    error_acc = 0.0
+    n_i = length(node_i.mps)
+    n_j = length(node_j.mps)
+
+    # -----------------------------------------------------------------------
+    # Step 1: bring i's paired legs to the MPS tail (positions n_i-1, n_i)
+    # -----------------------------------------------------------------------
+    ki = find_leg(node_i, j_id, true)
+    ki > 0 || error("eat!: ket leg to neighbor $j_id not found in node_i")
+    error_acc += move!(node_i, ki, n_i - 1)
+    # Re-find bra after the ket move (neighbor/layer are updated by swap!)
+    bi = find_leg(node_i, j_id, false)
+    bi > 0 || error("eat!: bra leg to neighbor $j_id not found in node_i")
+    error_acc += move!(node_i, bi, n_i)
+
+    # Canonicalize to the last site so it carries the un-normalized weight
+    cano_to!(node_i, n_i)
+
+    # -----------------------------------------------------------------------
+    # Step 2: bring j's paired legs to the MPS head (positions 1, 2)
+    # -----------------------------------------------------------------------
+    kj = find_leg(node_j, i_id, true)
+    kj > 0 || error("eat!: ket leg to neighbor $i_id not found in node_j")
+    error_acc += move!(node_j, kj, 1)
+    # Re-find bra after the ket move
+    bj = find_leg(node_j, i_id, false)
+    bj > 0 || error("eat!: bra leg to neighbor $i_id not found in node_j")
+    error_acc += move!(node_j, bj, 2)
+
+    # -----------------------------------------------------------------------
+    # Step 3: contract the four boundary sites
+    # A_ik = node_i.mps[n_i-1]:  shape (dl, Dk, χ_mid)
+    # A_ib = node_i.mps[n_i]:    shape (χ_mid, Db, 1)
+    # A_jk = node_j.mps[1]:      shape (1, Dk, χ_mid2)
+    # A_jb = node_j.mps[2]:      shape (χ_mid2, Db, dr)
+    # -----------------------------------------------------------------------
+    A_ik = node_i.mps[n_i - 1]
+    A_ib = node_i.mps[n_i]
+    A_jk = node_j.mps[1]
+    A_jb = node_j.mps[2]
+
+    dl    = size(A_ik, 1)
+    Dk    = size(A_ik, 2)
+    Db    = size(A_ib, 2)
+    dr    = size(A_jb, 3)
+
+    # Fuse i's last two: (dl, Dk, χ_mid) × (χ_mid, Db, 1) → (dl, Dk, Db)
+    W_i = reshape(ein"ijk,kab->ijab"(A_ik, A_ib), dl, Dk, Db)
+    # Fuse j's first two: (1, Dk, χ_mid2) × (χ_mid2, Db, dr) → (Dk, Db, dr)
+    W_j = reshape(ein"ijk,kab->ijab"(A_jk, A_jb), Dk, Db, dr)
+
+    # Contract over Dk and Db: (dl, Dk, Db) × (Dk, Db, dr) → (dl, dr)
+    mat = ein"iab,abj->ij"(W_i, W_j)   # (dl, dr)
+
+    # -----------------------------------------------------------------------
+    # Step 4: fold mat back into the MPS, handle all four cases
+    # -----------------------------------------------------------------------
+    if n_i == 2 && n_j == 2
+        # Case A: pure scalar — both nodes are exhausted
+        z    = sum(mat)
+        absz = abs(z)
+        empty!(node_i.mps)
+        empty!(node_i.neighbor)
+        empty!(node_i.layer)
+        if absz <= node_i.cutoff
+            return (0.0, error_acc, one(T))
+        end
+        return (log(absz), error_acc, z / absz)
+
+    elseif n_i == 2
+        # Case B: i is exhausted; mat (1,dr) prefixes j's remaining sites
+        new_left = reshape(mat, 1, 1, dr)   # (1, 1, dr): trivial phys dim
+        # Absorb mat into j's third site (which becomes the new first)
+        new_first = ein"ijk,kab->iab"(new_left, node_j.mps[3])  # (1, d3, dr3)
+        node_i.mps     = vcat([new_first], node_j.mps[4:end])
+        node_i.neighbor = node_j.neighbor[3:end]
+        node_i.layer    = node_j.layer[3:end]
+        node_i.cano     = 1
+
+        # re-canonicalize to tail
+        cano_to!(node_i, length(node_i.mps))
+
+        center = node_i.mps[node_i.cano]
+        if node_i.norm_method == 1
+            norm = LinearAlgebra.norm(vec(center))
+        elseif node_i.norm_method == 2
+            norm = maximum(abs, center)
+        else
+            norm = one(real(T))
+        end
+        norm <= node_i.cutoff && return (0.0, error_acc, one(T))
+        node_i.mps[end] ./= norm
+        return (log(norm), error_acc, one(T))
+
+    elseif n_j == 2
+        # Case C: j is exhausted; mat (dl,1) is folded into i's site n_i-2
+        new_tensor = ein"ijk,ka->ija"(node_i.mps[n_i - 2], mat)  # (dl2, d, 1)
+        node_i.mps[n_i - 2] = new_tensor
+        node_i.cano = n_i - 2
+        # pop last 2 sites (the contracted ket + bra)
+        pop!(node_i.mps); pop!(node_i.mps)
+        # remove their neighbor/layer entries
+        deleteat!(node_i.neighbor, length(node_i.neighbor))
+        deleteat!(node_i.neighbor, length(node_i.neighbor))
+        deleteat!(node_i.layer,    length(node_i.layer))
+        deleteat!(node_i.layer,    length(node_i.layer))
+
+        cano_to!(node_i, length(node_i.mps))
+
+        center = node_i.mps[node_i.cano]
+        if node_i.norm_method == 1
+            norm = LinearAlgebra.norm(vec(center))
+        elseif node_i.norm_method == 2
+            norm = maximum(abs, center)
+        else
+            norm = one(real(T))
+        end
+        norm <= node_i.cutoff && return (0.0, error_acc, one(T))
+        node_i.mps[end] ./= norm
+        return (log(norm), error_acc, one(T))
+
+    else
+        # Case D: general — fold mat into i's site n_i-2, append j's 3:end
+        new_tensor = ein"ijk,ka->ija"(node_i.mps[n_i - 2], mat)  # (dl2, d, dr)
+        node_i.mps[n_i - 2] = new_tensor
+        node_i.cano = n_i - 2
+        # pop last 2 sites (contracted ket + bra of i)
+        pop!(node_i.mps); pop!(node_i.mps)
+        deleteat!(node_i.neighbor, length(node_i.neighbor))
+        deleteat!(node_i.neighbor, length(node_i.neighbor))
+        deleteat!(node_i.layer,    length(node_i.layer))
+        deleteat!(node_i.layer,    length(node_i.layer))
+
+        # append j's remaining sites (3:end)
+        append!(node_i.mps,     node_j.mps[3:end])
+        append!(node_i.neighbor, node_j.neighbor[3:end])
+        append!(node_i.layer,    node_j.layer[3:end])
+
+        # re-canonicalize: sweep from n_i-2 to new tail
+        cano_to!(node_i, length(node_i.mps))
+
+        center = node_i.mps[node_i.cano]
+        if node_i.norm_method == 1
+            norm = LinearAlgebra.norm(vec(center))
+        elseif node_i.norm_method == 2
+            norm = maximum(abs, center)
+        else
+            norm = one(real(T))
+        end
+        norm <= node_i.cutoff && return (0.0, error_acc, one(T))
+        node_i.mps[end] ./= norm
+        return (log(norm), error_acc, one(T))
+    end
+end

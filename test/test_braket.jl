@@ -1,6 +1,7 @@
 using CATN
-using CATN: BraKetNode, braket_node, mps2raw, cano_to!, left_canonical!
+using CATN: BraKetNode, braket_node, mps2raw, cano_to!, left_canonical!, find_leg
 using CATN: BraKetNetwork, braket_network
+using CATN: eat!
 using OMEinsum, LinearAlgebra, Test
 
 # Exact ⟨ψ|ψ⟩ via a direct double-layer contraction (independent oracle).
@@ -90,6 +91,33 @@ end
         E = ein"apb,cpd->abcd"(Ti, conj(Ti))   # (v1, v2, v1', v2')
         @test mps2raw(node) ≈ E
     end
+end
+
+@testset "paired-edge eat! on two sites" begin
+    # 2-site state: T1(p1, a), T2(a, p2). Norm contracts p1,p2 and bond a (ket & bra).
+    T1 = randn(ComplexF64, 2, 4)        # (p1, a)
+    T2 = randn(ComplexF64, 4, 2)        # (a, p2)
+    n1 = braket_node(T1, [2], 1; chi=10_000)   # neighbor 2 via bond a; phys axis 1
+    n2 = braket_node(T2, [1], 2; chi=10_000)   # neighbor 1 via bond a; phys axis 2
+    # eat!(node_i, node_j, j_id_in_i, i_id_in_j): n1 sees n2 as neighbor 2; n2 sees n1 as neighbor 1
+    lognorm_val, err, phase = eat!(n1, n2, 2, 1)
+    # after eating, n1 should be a scalar (all legs contracted) → ⟨ψ|ψ⟩
+    val = exp(lognorm_val) * phase
+    ref = exact_norm([T1, T2], [[:p1, :a], [:a, :p2]])
+    @test val ≈ ref rtol=1e-10
+    @test imag(ref) ≈ 0 atol=1e-10   # real norm
+    @test real(ref) ≥ 0               # non-negative norm
+
+    # Real tensors
+    T1r = randn(Float64, 2, 4)
+    T2r = randn(Float64, 4, 2)
+    n1r = braket_node(T1r, [2], 1; chi=10_000)
+    n2r = braket_node(T2r, [1], 2; chi=10_000)
+    lognorm_r, err_r, phase_r = eat!(n1r, n2r, 2, 1)
+    val_r = exp(lognorm_r) * phase_r
+    ref_r = exact_norm([T1r, T2r], [[:p1, :a], [:a, :p2]])
+    @test val_r ≈ ref_r rtol=1e-10
+    @test ref_r ≥ 0
 end
 
 @testset "braket_network construction" begin
