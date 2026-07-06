@@ -504,9 +504,15 @@ end
     result_tensor(tn::TensorNetwork{T}) -> Array
 
 After `contraction!`, return the surviving open-leg node's dense tensor (legs in the
-node's final MPS order). For a fully-closed network (no open legs), returns a
-0-dimensional array holding `one(T)`. The full open-network result is
-`result_tensor(tn) .* exp(lnZ) .* psi`.
+node's final MPS order — a permutation of the open labels). The full open-network result is
+`result_tensor(tn) .* exp(lnZ) .* psi` (here `psi` is a scalar phase).
+
+For a fully-closed network (no open legs), returns a host 0-dimensional array holding
+`one(T)`, so the formula above reduces to the scalar `exp(lnZ) * psi`.
+
+v1 assumes a single connected component: exactly one surviving open-leg node is expected.
+A network that leaves more than one open-leg node (disconnected / multi-open) is unsupported
+and raises an error.
 """
 function result_tensor(tn::TensorNetwork{T}) where {T}
     open_nodes = [node for node in values(tn.tensors)

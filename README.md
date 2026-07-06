@@ -42,8 +42,9 @@ the accumulated truncation error (the sum of discarded singular values). Note `c
 consumes the network in place.
 
 For a network with open legs (a partial contraction), `contraction!` contracts all internal
-bonds and the result is a tensor: `result_tensor(tn) .* exp(lnZ) .* psi`. Fully-closed networks
-return the scalar `exp(lnZ) * psi`.
+bonds and the result is a tensor: `result_tensor(tn) .* exp(lnZ) .* psi` (with `psi` a scalar
+phase). Fully-closed networks return the scalar `exp(lnZ) * psi`. Partial contraction assumes a
+single connected component (one surviving open-leg node).
 
 ### Ising / spin-glass free energy
 
