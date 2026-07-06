@@ -7,6 +7,7 @@ using Test
     include("test_braket.jl")
     include("test_mps_node.jl")
     include("test_contraction.jl")
+    include("test_openleg.jl")
     include("test_ising.jl")
     include("test_adapt.jl")
     include("test_complex.jl")

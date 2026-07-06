@@ -185,6 +185,7 @@ Edges are processed in lexicographic order to ensure deterministic bucket orderi
 function count_add_nodes!(tn::TensorNetwork, nodes)
     edges = Set{Vector{Int}}()
     for i in nodes
+        i <= 0 && continue   # skip open-leg sentinels (not real nodes)
         for j in tn.tensors[i].neighbor
             j <= 0 && continue  # skip open legs / sentinels
             push!(edges, sort([i, j]))
@@ -211,6 +212,7 @@ pairs from the appropriate buckets in `tn.edge_count`.
 """
 function count_remove_nodes!(tn::TensorNetwork, nodes)
     for node_id in nodes
+        node_id <= 0 && continue   # skip open-leg sentinels (not real nodes)
         for nb in tn.tensors[node_id].neighbor
             nb <= 0 && continue  # skip open legs / sentinels
             i, j = sort([node_id, nb])
@@ -488,12 +490,30 @@ function network_lognorm(tn::TensorNetwork)
     T = eltype(first(values(tn.tensors)).mps |> v -> isempty(v) ? [1.0] : v[1])
     lognorm_total = zero(real(T))
     sign_total = one(T)
+    isscalar(node) = all(size(s, 2) == 1 for s in node.mps)
     for (_, node) in tn.tensors
+        isscalar(node) || continue   # skip non-scalar (open-leg) surviving nodes
         ln, sg = lognorm(node)
         lognorm_total += ln
         sign_total *= sg
     end
     return (lognorm_total, sign_total)
+end
+
+"""
+    result_tensor(tn::TensorNetwork{T}) -> Array
+
+After `contraction!`, return the surviving open-leg node's dense tensor (legs in the
+node's final MPS order). For a fully-closed network (no open legs), returns a
+0-dimensional array holding `one(T)`. The full open-network result is
+`result_tensor(tn) .* exp(lnZ) .* psi`.
+"""
+function result_tensor(tn::TensorNetwork{T}) where {T}
+    open_nodes = [node for node in values(tn.tensors)
+                  if !all(size(s, 2) == 1 for s in node.mps)]
+    isempty(open_nodes) && return fill(one(T))          # 0-d one() for closed networks
+    length(open_nodes) == 1 || error("result_tensor: expected one surviving open-leg node, got $(length(open_nodes)) (disconnected/multi-open networks are unsupported)")
+    return mps2raw(open_nodes[1])
 end
 
 # ---------------------------------------------------------------------------
