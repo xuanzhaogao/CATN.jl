@@ -20,7 +20,7 @@ using OMEinsum, LinearAlgebra, Test
             got = open_value(ts, ixs; Dmax=-1, chi=10_000)
             # compare up to leg permutation: same size-multiset and sorted values
             @test sort(collect(size(got))) == sort(collect(size(ref)))
-            @test vec(sort(vec(abs.(got)))) ≈ vec(sort(vec(abs.(ref)))) rtol=1e-8
+            @test vec(sort(vec(abs.(got)))) ≈ vec(sort(vec(abs.(ref)))) rtol=1e-10
         end
     end
 

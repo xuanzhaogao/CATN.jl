@@ -41,6 +41,10 @@ value = exp(lnZ) * psi      # ≈ tr(A*B*C)
 the accumulated truncation error (the sum of discarded singular values). Note `contraction!`
 consumes the network in place.
 
+For a network with open legs (a partial contraction), `contraction!` contracts all internal
+bonds and the result is a tensor: `result_tensor(tn) .* exp(lnZ) .* psi`. Fully-closed networks
+return the scalar `exp(lnZ) * psi`.
+
 ### Ising / spin-glass free energy
 
 `ising_network` builds the partition-function tensor network for an Ising model on an
@@ -82,30 +86,22 @@ Two knobs control the approximation; everything else has sensible defaults.
 
 ## GPU
 
-CATN is device-agnostic: it holds whatever array type you give it, and GPU compute is provided
-by OMEinsum's CUDA extension (contractions) and cuSOLVER (`svd`/`qr`). Move a network to the
-device with `cu` (or `adapt(CuArray, tn)`) and contract there:
+Move a network to the device and contract there — contractions run via OMEinsum's CUDA
+extension and `svd`/`qr` via cuSOLVER:
 
 ```julia
 using CATN, CUDA
-tn = ising_network(n, edges, w, h, β; Dmax=64, chi=256)   # built on CPU
-lnZ, err, psi = contraction!(cu(tn))                       # contracted on the GPU
+tn = ising_network(n, edges, w, h, β; Dmax=64, chi=256)
+lnZ, err, psi = contraction!(adapt(CuArray, tn))   # keeps Float64
+# or, for the faster Float32 path:
+lnZ, err, psi = contraction!(cu(tn))               # cu downcasts to Float32
 ```
 
-For the generic path, build the network directly from `CuArray`s:
-
-```julia
-gtn = TensorNetwork([CuArray(A), CuArray(B), CuArray(C)], ixs; Dmax=64, chi=256)
-```
-
-`Float32` networks (`randn(Float32, …)`) are recommended on GPU for speed. **CATN has no CUDA
-dependency** — GPU support is provided through OMEinsum's CUDA extension when you load `CUDA`
-yourself, so CPU-only users install nothing extra. The GPU test suite lives in a separate
-environment (`test/gpu`) and is run on a CUDA-capable machine with:
-
-```
-julia test/gpu/run_gpu_tests.jl
-```
+`adapt(CuArray, tn)` preserves the element type (`Float64`); `cu(tn)` produces a `Float32`
+network. **The GPU only pays off for large, dense, `Float32` contractions** (crossover around
+bond dimension ~256, ~2.5–3× by ~1024 on an RTX 6000); for Ising / modest bond dimensions the
+CPU is faster because the contraction is many small tensor operations. CUDA is a test-only
+dependency (see the `test/gpu` environment); the core package has no CUDA dependency.
 
 ## Complex numbers
 
