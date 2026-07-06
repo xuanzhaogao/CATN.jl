@@ -72,6 +72,25 @@ else
             @test exp(lnZ) * psi ≈ ref rtol=1e-3
         end
 
+        @testset "cu(tn) yields a Float32 GPU network and matches CPU" begin
+            # closed Ising network (Float64) -> cu downcasts to Float32
+            edges = [(1,2),(2,3),(3,1)]
+            β = 0.3
+            cpu = ising_network(3, edges, [0.5,-0.8,1.1], [0.2,-0.1,0.4], β; Dmax=-1, chi=10_000)
+            g   = ising_network(3, edges, [0.5,-0.8,1.1], [0.2,-0.1,0.4], β; Dmax=-1, chi=10_000)
+            lnZ_cpu, = contraction!(cpu)
+            gtn = cu(g)
+            @test gtn isa TensorNetwork{Float32, <:CuArray{Float32,3}}
+            lnZ_g, = contraction!(gtn)
+            @test Float64(real(lnZ_g)) ≈ real(lnZ_cpu) rtol=1e-4       # Float32 precision
+            # adapt(CuArray, ·) preserves Float64
+            g2 = ising_network(3, edges, [0.5,-0.8,1.1], [0.2,-0.1,0.4], β; Dmax=-1, chi=10_000)
+            a2 = adapt(CuArray, g2)
+            @test a2 isa TensorNetwork{Float64, <:CuArray{Float64,3}}
+            lnZ_a, = contraction!(a2)
+            @test real(lnZ_a) ≈ real(lnZ_cpu) rtol=1e-10
+        end
+
         @testset "complex GPU contraction matches CPU + oracle" begin
             ts = [randn(ComplexF64,3,4), randn(ComplexF64,4,5), randn(ComplexF64,5,3)]
             ixs = [[:a,:b],[:b,:c],[:c,:a]]

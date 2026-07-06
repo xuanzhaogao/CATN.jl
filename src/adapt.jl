@@ -9,15 +9,16 @@ function Adapt.adapt_structure(to, node::MPSNode)
             node.cutoff, node.norm_method, node.svdopt, node.swapopt)
 end
 
-function Adapt.adapt_structure(to, tn::TensorNetwork{T}) where {T}
+function Adapt.adapt_structure(to, tn::TensorNetwork)
     ks = sort(collect(keys(tn.tensors)))
     new_nodes = [adapt(to, tn.tensors[k]) for k in ks]
     @assert !isempty(new_nodes) "adapt_structure: cannot adapt an empty TensorNetwork"
     NAT = eltype(new_nodes[1].mps)                       # AT after adapt
-    tensors = Dict{Int,MPSNode{T,NAT}}(k => n for (k, n) in zip(ks, new_nodes))
-    TensorNetwork{T,NAT}(
+    NT  = eltype(NAT)                                    # element type AFTER the move
+    tensors = Dict{Int,MPSNode{NT,NAT}}(k => n for (k, n) in zip(ks, new_nodes))
+    TensorNetwork{NT,NAT}(
         tensors, tn.Dmax, tn.chi, tn.cutoff, tn.norm_method, tn.select, tn.reverse,
         tn.svdopt, tn.swapopt, tn.compress, tn.cut_bond,
-        deepcopy(tn.edge_count), tn.lnZ, tn.sign, tn.psi, tn.maxdim_intermediate,
-        tn.num_isolated, deepcopy(tn.rng), tn.n, tn.beta)
+        deepcopy(tn.edge_count), NT(tn.lnZ), NT(tn.sign), NT(tn.psi),
+        tn.maxdim_intermediate, tn.num_isolated, deepcopy(tn.rng), tn.n, tn.beta)
 end
